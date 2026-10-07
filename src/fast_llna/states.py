@@ -1,8 +1,9 @@
 """Bit-packed configurations of R replicas and trajectories of them.
 
-Canonical layout: uint8 ``bits[..., N, ceil(R/8)]`` where replica r of node i is bit r % 8 (little bit order)
-of byte r // 8 of row i, with padding bits 0. On little-endian machines this is byte-for-byte the uint32 word
-layout ``[N][W]`` used by the kernels (replica r = bit r % 32 of word r // 32).
+Layout: a configuration is a flat little-endian bit array, uint8 ``bits[..., ceil(N * L / 8)]``, in which
+replica r of node i is bit i * L + r. L = bits_per_node(R) is the next power of two (1, 2, 4, 8) for R <= 8,
+and whole bytes, 8 * ceil(R / 8), beyond. Padding bits are 0. For R >= 8 these are the bytes of the rows
+[N, ceil(R / 8)].
 """
 
 from __future__ import annotations
@@ -16,25 +17,45 @@ from .rules import Rules
 _CHUNK = 1 << 26  # unpacked bytes per reducer chunk
 
 
+def bits_per_node(R: int) -> int:
+    return 1 << (R - 1).bit_length() if R <= 8 else 8 * -(-R // 8)
+
+
+def frame_bytes(n: int, R: int) -> int:
+    return -(-n * bits_per_node(R) // 8)
+
+
+def pack(x, L: int) -> np.ndarray:
+    """bool [..., R, N] -> uint8 [..., ceil(N * L / 8)] with replica r of node i at bit i * L + r (R <= L)."""
+    x = np.swapaxes(np.asarray(x, bool), -1, -2)  # [..., N, R]
+    *lead, n, R = x.shape
+    if L == 8 * -(-R // 8):  # whole bytes per node: packbits pads each node row itself
+        return np.packbits(x, axis=-1, bitorder="little").reshape(*lead, -1)
+    x = np.concatenate([x, np.zeros((*lead, n, L - R), bool)], axis=-1)
+    return np.packbits(x.reshape(*lead, n * L), axis=-1, bitorder="little")
+
+
+def unpack(bits, n: int, R: int, L: int) -> np.ndarray:
+    """Inverse of :func:`pack`: uint8 [..., ceil(n * L / 8)] -> bool [..., R, n]."""
+    x = np.unpackbits(bits, axis=-1, count=n * L, bitorder="little")
+    return np.swapaxes(x.reshape(*bits.shape[:-1], n, L)[..., :R], -1, -2).astype(bool)
+
+
 @dataclass(frozen=True, eq=False)
 class States:
     bits: np.ndarray
     n_replicas: int
+    n: int
 
     @classmethod
     def from_bool(cls, x) -> States:
         """From a boolean array ``[..., R, N]``."""
         x = np.asarray(x, dtype=bool)
-        return cls(np.packbits(np.swapaxes(x, -1, -2), axis=-1, bitorder="little"), x.shape[-2])
+        return cls(pack(x, bits_per_node(x.shape[-2])), x.shape[-2], x.shape[-1])
 
     def to_bool(self) -> np.ndarray:
         """Boolean array ``[..., R, N]``."""
-        x = np.unpackbits(self.bits, axis=-1, count=self.n_replicas, bitorder="little")
-        return np.swapaxes(x, -1, -2).astype(bool)
-
-    @property
-    def n(self) -> int:
-        return self.bits.shape[-2]
+        return unpack(self.bits, self.n, self.n_replicas, bits_per_node(self.n_replicas))
 
 
 def random_states(n: int, replicas: int, density: float = 0.5, seed=None) -> States:
@@ -67,16 +88,18 @@ def product(rules: Rules, states: States) -> tuple[Rules, States]:
 
 @dataclass(frozen=True, eq=False)
 class Trajectory:
-    """Recorded configurations ``states.bits[T', N, ceil(R/8)]`` at timesteps ``times``."""
+    """Recorded configurations ``states.bits[T', frame bytes]`` at timesteps ``times``."""
 
     states: States
     times: np.ndarray
 
     def _chunks(self):
-        bits = self.states.bits
-        step = max(1, _CHUNK // max(1, bits.shape[-2] * self.states.n_replicas))
-        for t in range(0, bits.shape[0], step):
-            yield np.unpackbits(bits[t : t + step], axis=-1, count=self.states.n_replicas, bitorder="little")
+        s = self.states
+        L = bits_per_node(s.n_replicas)
+        step = max(1, _CHUNK // max(1, s.n * L))
+        for t in range(0, s.bits.shape[0], step):
+            x = np.unpackbits(s.bits[t : t + step], axis=-1, count=s.n * L, bitorder="little")
+            yield x.reshape(-1, s.n, L)[..., : s.n_replicas]  # [t, N, R]
 
     def density(self) -> np.ndarray:
         """Fraction of living nodes, ``[T', R]``."""
@@ -88,4 +111,4 @@ class Trajectory:
         return np.concatenate([(x[..., a] ^ x[..., b]).mean(axis=1) for x in self._chunks()])
 
     def final(self) -> States:
-        return States(self.states.bits[-1], self.states.n_replicas)
+        return States(self.states.bits[-1], self.states.n_replicas, self.states.n)

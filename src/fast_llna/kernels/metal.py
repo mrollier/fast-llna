@@ -10,6 +10,7 @@ from functools import cache
 
 import numpy as np
 
+from ..states import frame_bytes
 from . import tables
 
 PRELUDE = """
@@ -87,19 +88,21 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
     bx = min(Wp, 32)
     grid, group = (Wp, N, 1), (bx, max(1, min(256 // bx, N)), 1)
 
-    nb = (R + 7) // 8
     rec = 0 if record == "final" else record
-    frames = np.empty((steps // rec + 1 if rec else 1, N, nb), np.uint8)
+    frames = np.empty((steps // rec + 1 if rec else 1, frame_bytes(N, R)), np.uint8)
     frames[0] = x0.bits
     pending = []  # (frame index, lazy mx array)
+
+    def frame(a):
+        return tables.to_frame(np.asarray(a).view(np.uint8), N, R, 32 * Wp)
 
     def flush():
         mx.eval(cur, *(a for _, a in pending))
         for f, a in pending:
-            frames[f] = np.asarray(a)[: N * Wp].view(np.uint8).reshape(N, 4 * Wp)[:, :nb]
+            frames[f] = frame(a)
         pending.clear()
 
-    cur = mx.array(_pad(tab.arrays["state"].ravel()))
+    cur = mx.array(_pad(tab.arrays["state"]))
     size = cur.size
     for s in range(steps):
         params = mx.array(np.array([N, Wp, tab.k0, tab.k1, (t0 + s) % 2**32], np.uint32))
@@ -116,5 +119,5 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
             flush()
     flush()
     if record == "final":
-        frames[0] = np.asarray(cur)[: N * Wp].view(np.uint8).reshape(N, 4 * Wp)[:, :nb]
+        frames[0] = frame(cur)
     return frames

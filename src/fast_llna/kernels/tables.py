@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from ..rng import noise_streams, quantize, split_seed
+from ..states import bits_per_node, frame_bytes, pack, unpack
 
 HEADER = (Path(__file__).parent / "llna.h").read_text()
 PMAX_BUCKETS = (4, 8, 12, 16, 24, 32)
@@ -31,6 +32,43 @@ def _pack_words(x: np.ndarray, Wp: int) -> np.ndarray:
     return out.view("<u4")
 
 
+def _words(b: np.ndarray, n_words: int) -> np.ndarray:
+    """uint8 bytes -> uint32 words, zero-padded to n_words."""
+    return np.pad(b, (0, 4 * n_words - b.size)).view("<u4")
+
+
+def to_kernel(x0, Lk: int) -> np.ndarray:
+    """States -> kernel state words with Lk bits per node (node-major), ceil(N * Lk / 32) words."""
+    N, Ls = x0.n, bits_per_node(x0.n_replicas)
+    if Ls == Lk:
+        b = x0.bits
+    elif Ls % 8 == 0 and Lk % 8 == 0:  # whole bytes per node: pad each node row
+        b = np.pad(x0.bits.reshape(N, Ls // 8), ((0, 0), (0, (Lk - Ls) // 8))).ravel()
+    else:
+        b = pack(x0.to_bool(), Lk)
+    return _words(b, -(-N * Lk // 32))
+
+
+def to_frame(state, n: int, R: int, Lk: int):
+    """Kernel state bytes (Lk bits per node, trailing padding allowed) -> one frame in the States layout.
+    The first two cases also work on cupy arrays."""
+    Ls = bits_per_node(R)
+    if Ls == Lk:
+        return state[: frame_bytes(n, R)]
+    if Ls % 8 == 0 and Lk % 8 == 0:
+        return state[: n * Lk // 8].reshape(n, Lk // 8)[:, : Ls // 8].reshape(-1)
+    return pack(unpack(state[: -(-n * Lk // 8)], n, R, Lk), Ls)
+
+
+def rows_to_frames(rows: np.ndarray, R: int) -> np.ndarray:
+    """v1 rows [F, N, ceil(R / 8)] -> frames [F, frame bytes]: a free reshape for R >= 5."""
+    F, n, nb = rows.shape
+    if bits_per_node(R) == 8 * nb:
+        return rows.reshape(F, n * nb)
+    x = np.unpackbits(rows, axis=-1, count=R, bitorder="little").swapaxes(-1, -2).astype(bool)
+    return pack(x, bits_per_node(R))
+
+
 @dataclass
 class Tables:
     defines: dict
@@ -44,7 +82,7 @@ class Tables:
 
 
 def build(graph, rules, x0, clamp, seed, noise_period, Wp) -> Tables:
-    R, N = x0.n_replicas, graph.n
+    R = x0.n_replicas
     deg = graph.degree
     kmax = int(deg.max())
     part = rules.partition
@@ -103,7 +141,5 @@ def build(graph, rules, x0, clamp, seed, noise_period, Wp) -> Tables:
         a["cv"] = _pack_words((clamp[0] & clamp[1]).T, Wp).ravel()
     else:
         a["cm"] = a["cv"] = np.zeros(1, np.uint32)
-    state = np.zeros((N, 4 * Wp), np.uint8)  # canonical bytes are already the word layout
-    state[:, : x0.bits.shape[1]] = x0.bits
-    a["state"] = state.view("<u4")  # [N, Wp]
+    a["state"] = to_kernel(x0, 32 * Wp)  # flat [N * Wp]
     return t

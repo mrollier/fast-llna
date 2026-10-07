@@ -150,9 +150,10 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
 
     nb = (R + 7) // 8
     rec = 0 if record == "final" else record
-    frames = np.empty((steps // rec + 1 if rec else 1, N, nb), np.uint8)
-    frames[0] = x0.bits
-    bufs = [np.ascontiguousarray(tab.arrays["state"]), np.empty((N, Wp), np.uint32)]
+    rows = np.empty((steps // rec + 1 if rec else 1, N, nb), np.uint8)  # the kernel records [N, nb] rows
+    state = tab.arrays["state"]
+    rows[0] = state.view(np.uint8).reshape(N, 4 * Wp)[:, :nb]
+    bufs = [state.copy(), np.empty_like(state)]
     fixed = [_ptr(tab.arrays[k]) for k in ARRAYS]
     L, U, C = ctypes.c_long, ctypes.c_uint32, ctypes.c_int
 
@@ -161,7 +162,7 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
             *fixed,
             _ptr(cur),
             _ptr(nxt),
-            _ptr(frames),
+            _ptr(rows),
             L(N),
             L(nb),
             L(Wp),
@@ -200,5 +201,5 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
                 bufs.reverse()
             final = bufs[0]
     if record == "final":
-        frames[0] = final.view(np.uint8)[:, :nb]
-    return frames
+        rows[0] = final.view(np.uint8).reshape(N, 4 * Wp)[:, :nb]
+    return tables.rows_to_frames(rows, R)

@@ -77,11 +77,11 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
 
     nb = (R + 7) // 8
     rec = 0 if record == "final" else record
-    frames = np.empty((steps // rec + 1 if rec else 1, N, nb), np.uint8)
-    frames[0] = x0.bits
-    # keep recorded frames on the GPU when they fit comfortably, else copy each one to the host
-    on_device = rec and frames.nbytes < 0.5 * cp.cuda.Device().mem_info[0]
-    dframes = cp.empty(frames.shape, np.uint8) if on_device else None
+    rows = np.empty((steps // rec + 1 if rec else 1, N, nb), np.uint8)  # v1 rows [N, nb], converted at the end
+    rows[0] = tab.arrays["state"].view(np.uint8).reshape(N, 4 * Wp)[:, :nb]
+    # keep recorded rows on the GPU when they fit comfortably, else copy each one to the host
+    on_device = rec and rows.nbytes < 0.5 * cp.cuda.Device().mem_info[0]
+    drows = cp.empty(rows.shape, np.uint8) if on_device else None
 
     cur = cp.asarray(tab.arrays["state"])
     nxt = cp.empty_like(cur)
@@ -99,13 +99,13 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
         kernel(grid, block, args)
         cur, nxt = nxt, cur
         if rec and (s + 1) % rec == 0:
-            frame = cur.view(np.uint8)[:, :nb]
+            row = cur.view(np.uint8).reshape(N, 4 * Wp)[:, :nb]
             if on_device:
-                dframes[(s + 1) // rec] = frame
+                drows[(s + 1) // rec] = row
             else:
-                frames[(s + 1) // rec] = cp.asnumpy(frame)
+                rows[(s + 1) // rec] = cp.asnumpy(row)
     if on_device:
-        frames[1:] = cp.asnumpy(dframes[1:])
+        rows[1:] = cp.asnumpy(drows[1:])
     if record == "final":
-        frames[0] = cp.asnumpy(cur.view(np.uint8)[:, :nb])
-    return frames
+        rows[0] = cp.asnumpy(cur.view(np.uint8).reshape(N, 4 * Wp)[:, :nb])
+    return tables.rows_to_frames(rows, R)

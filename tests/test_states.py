@@ -2,22 +2,28 @@ import numpy as np
 import pytest
 
 import fast_llna as fl
+from fast_llna.states import bits_per_node, frame_bytes
 
 
-@pytest.mark.parametrize("R", [1, 7, 8, 9, 31, 33])
-def test_pack_roundtrip_and_canonical_layout(R):
-    x = np.random.default_rng(R).integers(0, 2, size=(3, R, 13)).astype(bool)
+@pytest.mark.parametrize("R, L", [(1, 1), (2, 2), (3, 4), (4, 4), (5, 8), (8, 8), (9, 16), (17, 24), (33, 40)])
+def test_bits_per_node(R, L):
+    assert bits_per_node(R) == L
+
+
+@pytest.mark.parametrize("R", [1, 2, 3, 5, 7, 8, 9, 17, 31, 33])
+def test_flat_node_major_layout(R):
+    n, L = 13, bits_per_node(R)
+    x = np.random.default_rng(R).integers(0, 2, size=(3, R, n)).astype(bool)
     s = fl.States.from_bool(x)
-    assert s.bits.shape == (3, 13, (R + 7) // 8) and s.n_replicas == R
+    assert s.bits.shape == (3, frame_bytes(n, R)) == (3, -(-n * L // 8))
+    assert s.n_replicas == R and s.n == n
     assert np.array_equal(s.to_bool(), x)
-    # canonical: bit r % 8 of byte r // 8 of node row i is replica r (little bit order)
-    t, i, r = 2, 5, R - 1
-    assert bool((s.bits[t, i, r // 8] >> (r % 8)) & 1) == x[t, r, i]
-
-
-def test_padding_bits_are_zero():
-    s = fl.States.from_bool(np.ones((9, 4), bool))
-    assert np.all(s.bits[:, 1] == 1)
+    bit = np.unpackbits(s.bits, axis=-1, bitorder="little").astype(bool)  # [3, 8 * frame bytes]
+    t, i, r = np.meshgrid(np.arange(3), np.arange(n), np.arange(R), indexing="ij")
+    assert np.array_equal(bit[t, i * L + r], x[t, r, i])  # replica r of node i is bit i * L + r
+    unused = np.ones(bit.shape[-1], bool)
+    unused[(i * L + r)[0].ravel()] = False
+    assert not bit[:, unused].any()  # padding lanes and trailing bits are 0
 
 
 def test_random_states_have_exact_density():
@@ -49,11 +55,12 @@ def test_product_is_rule_major():
     assert np.array_equal(ps.to_bool(), np.tile(s.to_bool(), (2, 1)))
 
 
-def test_trajectory_reducers_match_naive():
+@pytest.mark.parametrize("R", [1, 3, 11])
+def test_trajectory_reducers_match_naive(R):
     rng = np.random.default_rng(0)
-    x = rng.integers(0, 2, size=(4, 11, 25)).astype(bool)  # [T, R, N]
+    x = rng.integers(0, 2, size=(4, R, 25)).astype(bool)  # [T, R, N]
     traj = fl.Trajectory(fl.States.from_bool(x), np.arange(4))
     assert np.allclose(traj.density(), x.mean(axis=2))
-    pairs = np.array([[0, 5], [3, 10], [7, 7]])
+    pairs = np.array([[0, R - 1], [R // 2, 0], [R - 1, R - 1]])
     assert np.allclose(traj.hamming(pairs), (x[:, pairs[:, 0]] ^ x[:, pairs[:, 1]]).mean(axis=2))
     assert np.array_equal(traj.final().to_bool(), x[-1])

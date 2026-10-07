@@ -163,3 +163,10 @@ def test_noise_period_beyond_replica_count_changes_nothing():
 def test_noise_period_must_divide_or_be_multiple_of_32(period):
     with pytest.raises(ValueError, match="noise_period"):
         sim(fl.ring(10), fl.majority(), fl.random_states(10, 2), 1, noise_period=period)
+
+
+def test_size_guard_counts_bits_per_node_for_one_replica():
+    g, x = fl.ring(800), fl.random_states(800, 1, seed=0)  # 100 bytes per frame, 100 frames
+    sim(g, fl.life_like(3, 2, 5), x, 99, max_bytes=10_000)
+    with pytest.raises(ValueError, match="bytes"):
+        sim(g, fl.life_like(3, 2, 5), x, 99, max_bytes=9_999)

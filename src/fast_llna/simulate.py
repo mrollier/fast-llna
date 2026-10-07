@@ -9,7 +9,7 @@ import numpy as np
 
 from .graph import Graph
 from .rules import Rules
-from .states import States, Trajectory
+from .states import States, Trajectory, frame_bytes
 
 BACKENDS = ("cuda", "metal", "cpu", "reference")  # auto picks the first available
 
@@ -87,7 +87,7 @@ def simulate(
         times = t0 + np.arange(0, steps + 1, record)
     else:
         raise ValueError("record must be a positive int or 'final'")
-    nbytes = len(times) * N * ((R + 7) // 8)
+    nbytes = len(times) * frame_bytes(N, R)
     if nbytes > max_bytes:
         raise ValueError(
             f"recorded trajectory would need {nbytes:.3g} bytes (> max_bytes={max_bytes:.3g}); "
@@ -104,4 +104,4 @@ def simulate(
     if backend not in BACKENDS:
         raise ValueError(f"unknown backend {backend!r}; choose from {BACKENDS}")
     bits = _module(backend).run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads)
-    return Trajectory(States(bits, R), times)
+    return Trajectory(States(bits, R, N), times)
