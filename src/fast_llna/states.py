@@ -38,7 +38,7 @@ def pack(x, L: int) -> np.ndarray:
 def unpack(bits, n: int, R: int, L: int) -> np.ndarray:
     """Inverse of :func:`pack`: uint8 [..., ceil(n * L / 8)] -> bool [..., R, n]."""
     x = np.unpackbits(bits, axis=-1, count=n * L, bitorder="little")
-    return np.swapaxes(x.reshape(*bits.shape[:-1], n, L)[..., :R], -1, -2).astype(bool)
+    return np.swapaxes(x.reshape(*bits.shape[:-1], n, L)[..., :R], -1, -2).view(bool)
 
 
 @dataclass(frozen=True, eq=False)
@@ -48,6 +48,8 @@ class States:
     n: int
 
     def __post_init__(self):
+        if self.n_replicas < 1 or self.n < 1:
+            raise ValueError(f"need at least one replica and one node, got R={self.n_replicas}, N={self.n}")
         want = frame_bytes(self.n, self.n_replicas)
         if np.ndim(self.bits) == 0 or np.shape(self.bits)[-1] != want:
             raise ValueError(
@@ -59,6 +61,8 @@ class States:
     def from_bool(cls, x) -> States:
         """From a boolean array ``[..., R, N]``."""
         x = np.asarray(x, dtype=bool)
+        if x.ndim < 2:
+            raise ValueError(f"expected a boolean array [R, N] (or [..., R, N]), got shape {x.shape}")
         return cls(pack(x, bits_per_node(x.shape[-2])), x.shape[-2], x.shape[-1])
 
     def to_bool(self) -> np.ndarray:
@@ -68,10 +72,11 @@ class States:
 
 def random_states(n: int, replicas: int, density: float = 0.5, seed=None) -> States:
     """Independent configurations with exactly ``round(density * n)`` living nodes each."""
+    if not 0 <= density <= 1:
+        raise ValueError(f"density must lie in [0, 1], got {density}")
     rng = np.random.default_rng(seed)
-    alive = round(density * n)
-    ranks = rng.random((replicas, n)).argsort(axis=1).argsort(axis=1)
-    return States.from_bool(ranks < alive)
+    alive = np.arange(n) < round(density * n)
+    return States.from_bool(rng.permuted(np.broadcast_to(alive, (replicas, n)), axis=1))
 
 
 def defect_twins(states: States, flips: int = 1, seed=None) -> tuple[States, np.ndarray]:
@@ -82,16 +87,18 @@ def defect_twins(states: States, flips: int = 1, seed=None) -> tuple[States, np.
     rng = np.random.default_rng(seed)
     x = states.to_bool()
     R, n = x.shape
-    toggled = rng.random((R, n)).argsort(axis=1)[:, :flips]
+    if not 0 <= flips <= n:
+        raise ValueError(f"flips must lie in [0, {n}], got {flips}")
+    toggled = np.stack([rng.choice(n, flips, replace=False) for _ in range(R)])  # [R, flips]
     twins = x.copy()
-    np.logical_xor.at(twins, (np.arange(R)[:, None], toggled), True)
+    twins[np.arange(R)[:, None], toggled] ^= True
     return States.from_bool(np.concatenate([x, twins])), np.c_[np.arange(R), np.arange(R, 2 * R)]
 
 
 def product(rules: Rules, states: States) -> tuple[Rules, States]:
-    """All rule x configuration combinations; replica k * L + l runs rule k from configuration l."""
-    K, L = len(rules), states.n_replicas
-    return rules.take(np.repeat(np.arange(K), L)), States.from_bool(np.tile(states.to_bool(), (K, 1)))
+    """All rule x configuration combinations; replica k * C + c runs rule k from configuration c."""
+    K, C = len(rules), states.n_replicas
+    return rules.take(np.repeat(np.arange(K), C)), States.from_bool(np.tile(states.to_bool(), (K, 1)))
 
 
 @dataclass(frozen=True, eq=False)
@@ -102,21 +109,21 @@ class Trajectory:
     times: np.ndarray
 
     def _chunks(self):
+        """The trajectory unpacked to bool [t, R, N], a few frames at a time."""
         s = self.states
         L = bits_per_node(s.n_replicas)
         step = max(1, _CHUNK // max(1, s.n * L))
         for t in range(0, s.bits.shape[0], step):
-            x = np.unpackbits(s.bits[t : t + step], axis=-1, count=s.n * L, bitorder="little")
-            yield x.reshape(-1, s.n, L)[..., : s.n_replicas]  # [t, N, R]
+            yield unpack(s.bits[t : t + step], s.n, s.n_replicas, L)
 
     def density(self) -> np.ndarray:
         """Fraction of living nodes, ``[T', R]``."""
-        return np.concatenate([x.mean(axis=1) for x in self._chunks()])
+        return np.concatenate([x.mean(axis=-1) for x in self._chunks()])
 
     def hamming(self, pairs) -> np.ndarray:
         """Normalised Hamming distance between replicas ``pairs[:, 0]`` and ``pairs[:, 1]``, ``[T', P]``."""
-        a, b = np.asarray(pairs).T
-        return np.concatenate([(x[..., a] ^ x[..., b]).mean(axis=1) for x in self._chunks()])
+        a, b = np.atleast_2d(pairs).T
+        return np.concatenate([(x[:, a] ^ x[:, b]).mean(axis=-1) for x in self._chunks()])
 
     def final(self) -> States:
         return States(self.states.bits[-1], self.states.n_replicas, self.states.n)

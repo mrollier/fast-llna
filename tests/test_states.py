@@ -72,3 +72,27 @@ def test_states_rejects_bits_that_do_not_match_n_and_R():
         fl.States(bits.reshape(4, 1), 8, 4)  # v1 row shape [N, nb]
     with pytest.raises(ValueError, match="bytes"):
         fl.States(bits, 8, 3)
+
+
+def test_from_bool_needs_replica_and_node_axes():
+    with pytest.raises(ValueError, match=r"\[R, N\]"):
+        fl.States.from_bool(np.ones(5, bool))
+
+
+def test_states_need_at_least_one_replica_and_node():
+    with pytest.raises(ValueError):
+        fl.States(np.zeros(1, np.uint8), 0, 4)
+
+
+def test_random_states_and_twins_validate_their_counts():
+    with pytest.raises(ValueError, match="density"):
+        fl.random_states(10, 2, density=1.5)
+    with pytest.raises(ValueError, match="flips"):
+        fl.defect_twins(fl.random_states(10, 2, seed=0), flips=11)
+
+
+def test_hamming_accepts_a_single_pair():
+    x = np.random.default_rng(1).integers(0, 2, size=(3, 4, 9)).astype(bool)
+    traj = fl.Trajectory(fl.States.from_bool(x), np.arange(3))
+    got = traj.hamming([0, 3])
+    assert got.shape == (3, 1) and np.allclose(got[:, 0], (x[:, 0] ^ x[:, 3]).mean(axis=1))

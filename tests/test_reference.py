@@ -170,3 +170,30 @@ def test_size_guard_counts_bits_per_node_for_one_replica():
     sim(g, fl.life_like(3, 2, 5), x, 99, max_bytes=10_000)
     with pytest.raises(ValueError, match="bytes"):
         sim(g, fl.life_like(3, 2, 5), x, 99, max_bytes=9_999)
+
+
+def test_simulate_validates_seed_and_t0():
+    g, x, rule = fl.ring(10), fl.random_states(10, 2, seed=0), fl.life_like(3, 2, 5)
+    with pytest.raises(ValueError, match="seed"):
+        sim(g, rule, x, 1, seed=None)
+    with pytest.raises(ValueError, match="t0"):
+        sim(g, rule, x, 1, t0=-1)
+    with pytest.raises(ValueError, match="t0"):
+        sim(g, rule, x, 2, t0=2**32 - 2)
+
+
+def test_record_accepts_numpy_integers():
+    g, x, rule = fl.ring(10), fl.random_states(10, 2, seed=0), fl.life_like(3, 2, 5)
+    assert sim(g, rule, x, 4, record=np.int64(2)).times.tolist() == [0, 2, 4]
+
+
+def test_backend_env_override_is_validated(monkeypatch):
+    g, x, rule = fl.ring(10), fl.random_states(10, 2, seed=0), fl.life_like(3, 2, 5)
+    monkeypatch.setenv("FAST_LLNA_BACKEND", "auto")
+    fl.simulate(g, rule, x, 1)
+    monkeypatch.setenv("FAST_LLNA_BACKEND", "nonsense")
+    with pytest.raises(ValueError, match="nonsense"):
+        fl.simulate(g, rule, x, 1)
+    monkeypatch.delenv("FAST_LLNA_BACKEND")
+    with pytest.raises(ValueError, match="available"):
+        fl.simulate(g, rule, x, 1, backend="cuda" if "cuda" not in fl.available_backends() else "nonsense")

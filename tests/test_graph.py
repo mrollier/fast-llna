@@ -60,3 +60,31 @@ def test_union_is_block_diagonal_with_offsets():
     assert np.array_equal(A[:4, :4], fl.ring(4).adjacency().toarray())
     assert np.array_equal(A[4:, 4:], fl.moore_torus(3, 3).adjacency().toarray())
     assert A[:4, 4:].sum() == 0 and A[4:, :4].sum() == 0
+
+
+def test_adjacency_counts_large_in_degrees():
+    A = np.zeros((201, 201), np.int8)
+    A[0, 1:] = 1  # node 0 reads 200 nodes
+    A[1:, 0] = 1
+    alive = np.ones(201, bool)
+    assert (fl.Graph(A).adjacency() @ alive)[0] == 200  # not an int8 wrap-around
+
+
+def test_graph_leaves_the_callers_matrix_untouched():
+    A = sp.csr_array((np.ones(4), np.array([2, 1, 0, 0]), np.array([0, 2, 3, 4])), shape=(3, 3))
+    before = (A.indptr.copy(), A.indices.copy())
+    fl.Graph(A)
+    assert np.array_equal(A.indptr, before[0]) and np.array_equal(A.indices, before[1])
+
+
+def test_duplicate_edges_are_named_in_the_error():
+    A = sp.coo_array((np.ones(3), ([0, 0, 1], [1, 1, 0])), shape=(2, 2))
+    with pytest.raises(ValueError, match="duplicate"):
+        fl.Graph(A)
+
+
+def test_lattices_reject_sizes_that_fold_onto_themselves():
+    with pytest.raises(ValueError, match="radius"):
+        fl.ring(4, radius=2)
+    with pytest.raises(ValueError, match="3"):
+        fl.moore_torus(2, 5)

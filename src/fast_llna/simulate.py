@@ -15,9 +15,7 @@ BACKENDS = ("cuda", "metal", "cpu", "reference")  # auto picks the first availab
 
 
 def _module(name):
-    return importlib.import_module(
-        f".{'reference' if name == 'reference' else 'kernels.' + name}", __package__
-    )
+    return importlib.import_module(".reference" if name == "reference" else f".kernels.{name}", __package__)
 
 
 def available_backends() -> list[str]:
@@ -62,12 +60,14 @@ def simulate(
         value at every timestep, including the initial one.
     seed, t0
         Randomness depends only on (seed, timestep, node, replica word), so a run of a + b steps equals a run
-        of a steps continued with ``t0=a``.
+        of a steps continued with ``t0=a``. Timesteps are 32-bit: ``t0 + steps < 2**32``.
     noise_period
         Replicas r and r + noise_period draw the same random numbers (e.g. defect twins); must divide 32 or be
         a multiple of 32.
     backend
         "auto" or one of :data:`BACKENDS`; the environment variable FAST_LLNA_BACKEND overrides "auto".
+    threads
+        CPU backend only: worker threads (default: all cores).
     max_bytes
         Refuse to allocate a recorded trajectory larger than this.
     """
@@ -81,9 +81,14 @@ def simulate(
         raise ValueError(f"need 1 or {R} rules (one per replica), got {len(rules)}")
     if steps < 0:
         raise ValueError("steps must be >= 0")
+    if not isinstance(seed, (int, np.integer)):
+        raise ValueError(f"seed must be an integer, got {seed!r}")
+    if t0 < 0 or t0 + steps >= 2**32:
+        raise ValueError(f"t0 must satisfy 0 <= t0 and t0 + steps < 2**32, got t0={t0}, steps={steps}")
     if record == "final":
         times = np.array([t0 + steps])
-    elif isinstance(record, int) and record >= 1:
+    elif isinstance(record, (int, np.integer)) and record >= 1:
+        record = int(record)
         if steps % record:
             raise ValueError(f"steps ({steps}) must be a multiple of record ({record})")
         times = t0 + np.arange(0, steps + 1, record)
@@ -95,15 +100,18 @@ def simulate(
             f"recorded trajectory would need {nbytes:.3g} bytes (> max_bytes={max_bytes:.3g}); "
             "record fewer timesteps (record=n or 'final') or raise max_bytes"
         )
+    if noise_period is not None and (noise_period <= 0 or (32 % noise_period and noise_period % 32)):
+        raise ValueError("noise_period must divide 32 or be a positive multiple of 32")
     if clamp is not None:
         mask, value = (np.broadcast_to(np.asarray(a, bool), (R, N)) for a in clamp)
         clamp = (mask, value)
         x0 = States.from_bool(np.where(mask, value, x0.to_bool()))
-    if noise_period is not None and (noise_period <= 0 or (32 % noise_period and noise_period % 32)):
-        raise ValueError("noise_period must divide 32 or be a positive multiple of 32")
     if backend == "auto":
-        backend = os.environ.get("FAST_LLNA_BACKEND") or available_backends()[0]
-    if backend not in BACKENDS:
-        raise ValueError(f"unknown backend {backend!r}; choose from {BACKENDS}")
+        backend = os.environ.get("FAST_LLNA_BACKEND", "auto")
+    available = available_backends()
+    if backend == "auto":
+        backend = available[0]
+    elif backend not in available:
+        raise ValueError(f"backend {backend!r} is not available here; choose from {available}")
     bits = _module(backend).run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads)
     return Trajectory(States(bits, R, N), times)

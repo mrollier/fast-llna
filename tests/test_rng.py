@@ -55,3 +55,13 @@ def test_quantize_rounds_to_2_pow_minus_32_and_reports_bucketed_depth():
 def test_quantize_warns_when_probability_vanishes():
     with pytest.warns(UserWarning):
         rng.quantize(np.array([1e-12]))
+
+
+def test_quantize_warns_when_probability_rounds_up_to_one():
+    with pytest.warns(UserWarning):
+        rng.quantize(np.array([1 - 1e-12]))
+
+
+def test_quantize_depth_over_many_distinct_probabilities():
+    p = np.arange(1, 2**12) / 2**12  # exact depth 12 -> bucket 16
+    assert rng.quantize(p)[1] == 16

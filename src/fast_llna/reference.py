@@ -7,10 +7,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from .rng import quantize, rule_words
+from .rng import ONE, quantize, rule_words
 from .states import States
-
-ONE = np.uint64(2**32)
 
 
 def available() -> bool:
@@ -32,16 +30,15 @@ def _digits(seed, t, n, R, depth, noise_period):
 
 
 def run(graph, rules, x0: States, steps, record, clamp, seed, t0, noise_period, threads=None):
-    A = graph.adjacency().astype(np.int64)
-    k = graph.degree.astype(np.int64)
+    A, k = graph.adjacency(), graph.degree
     x = x0.to_bool()
     R = x.shape[0]
     replicas = np.arange(R)[:, None]
     P, depth = quantize(rules.p)
     P = P[np.zeros(R, int) if len(rules) == 1 else np.arange(R)]  # [R, 2, ncell]
-    frames = [x] if record and record != "final" else []
+    frames = [x] if record != "final" else []
     for step in range(steps):
-        q = (A @ x.T.astype(np.int64)).T
+        q = (A @ x.T).T  # living in-neighbours, [R, N]
         cB, cS = rules.partition.cell(q, k, 0), rules.partition.cell(q, k, 1)
         p = np.where(x, P[replicas, 1, cS], P[replicas, 0, cB])
         alive = p == ONE

@@ -26,6 +26,7 @@ import numpy as np
 _M0, _M1 = np.uint64(0xD2511F53), np.uint64(0xCD9E8D57)
 _W0, _W1 = np.uint32(0x9E3779B9), np.uint32(0xBB67AE85)
 _LO = np.uint64(0xFFFFFFFF)
+ONE = np.uint64(2**32)  # the quantized probability 1
 DEPTHS = (0, 1, 2, 4, 8, 16, 32)
 
 
@@ -67,11 +68,11 @@ def quantize(p) -> tuple[np.ndarray, int]:
     and the number of random digits needed by the fractional ones, bucketed to one of DEPTHS."""
     p = np.asarray(p, np.float64)
     P = np.rint(p * 2.0**32).astype(np.uint64)
-    if np.any((p > 0) & (P == 0)):
-        warnings.warn("a probability rounds to 0 at 2^-32 resolution", stacklevel=2)
-    frac = P[(P > 0) & (P < 2**32)]
+    if np.any((p > 0) & (P == 0)) or np.any((p < 1) & (P == ONE)):
+        warnings.warn("a probability rounds to 0 or 1 at 2^-32 resolution", stacklevel=2)
+    frac = P[(P > 0) & (P < ONE)]
     if frac.size == 0:
         return P, 0
-    trailing = np.array([(int(x) & -int(x)).bit_length() - 1 for x in np.unique(frac)])
-    depth = 32 - int(trailing.min())
+    v = int(np.bitwise_or.reduce(frac))  # its trailing zeros are the fewest of any fractional P
+    depth = 32 - ((v & -v).bit_length() - 1)
     return P, next(b for b in DEPTHS if b >= depth)

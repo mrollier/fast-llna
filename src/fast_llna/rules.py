@@ -36,6 +36,8 @@ class Partition:
             raise ValueError("the majority partition has exactly 3 cells")
         if self.even not in ("+-", "-+"):
             raise ValueError("even must be '+-' or '-+'")
+        if self.kind != "symmetric" or self.r % 2:  # the convention only matters for even symmetric r
+            object.__setattr__(self, "even", "+-")
 
     @property
     def ncell(self) -> int:
@@ -77,18 +79,27 @@ class Rules:
     p: np.ndarray
 
     def __post_init__(self):
-        p = np.asarray(self.p, dtype=np.float64)
+        p = np.array(self.p, dtype=np.float64)  # a private copy: the check below must stay true
         if p.ndim != 3 or p.shape[1:] != (2, self.partition.ncell):
             raise ValueError(f"p must have shape [K, 2, {self.partition.ncell}], got {p.shape}")
-        if np.any((p < 0) | (p > 1)):
+        if not np.all((p >= 0) & (p <= 1)):  # also rejects NaN
             raise ValueError("probabilities must lie in [0, 1]")
+        p.setflags(write=False)
         object.__setattr__(self, "p", p)
 
     def __len__(self) -> int:
         return len(self.p)
 
     def take(self, idx) -> Rules:
-        return Rules(self.partition, self.p[np.asarray(idx)])
+        return Rules(self.partition, self.p[np.atleast_1d(idx)])
+
+
+def _codes(r: int, beta, sigma) -> tuple[np.ndarray, np.ndarray]:
+    """beta and sigma broadcast against each other, as int64 arrays checked against [0, 2^r)."""
+    beta, sigma = np.broadcast_arrays(np.asarray(beta, np.int64), np.asarray(sigma, np.int64))
+    if np.any((beta < 0) | (beta >= 2**r) | (sigma < 0) | (sigma >= 2**r)):
+        raise ValueError(f"beta and sigma must lie in [0, {2**r})")
+    return beta, sigma
 
 
 def life_like(r: int, beta, sigma, partition: Partition | None = None) -> Rules:
@@ -99,11 +110,9 @@ def life_like(r: int, beta, sigma, partition: Partition | None = None) -> Rules:
     partition = symmetric(r) if partition is None else partition
     if partition.ncell != r:
         raise ValueError(f"partition has {partition.ncell} cells, rule code has resolution {r}")
-    beta, sigma = np.broadcast_arrays(np.atleast_1d(np.asarray(beta, np.int64)), np.asarray(sigma, np.int64))
-    if np.any((beta < 0) | (beta >= 2**r) | (sigma < 0) | (sigma >= 2**r)):
-        raise ValueError(f"beta and sigma must lie in [0, {2**r})")
+    beta, sigma = (c.ravel() for c in _codes(r, beta, sigma))
     bits = np.arange(r)
-    p = np.stack([(beta.ravel()[:, None] >> bits) & 1, (sigma.ravel()[:, None] >> bits) & 1], axis=1)
+    p = np.stack([(beta[:, None] >> bits) & 1, (sigma[:, None] >> bits) & 1], axis=1)
     return Rules(partition, p)
 
 
@@ -114,7 +123,6 @@ def majority(p_tie: float = 0.5) -> Rules:
 
 
 def _reverse_bits(v, r):
-    v = np.asarray(v, np.int64)
     out = np.zeros_like(v)
     for i in range(r):
         out |= ((v >> i) & 1) << (r - 1 - i)
@@ -123,7 +131,9 @@ def _reverse_bits(v, r):
 
 def equivalent(r: int, beta, sigma):
     """The rule equivalent to phi^r_{beta, sigma} under state complementation (app03): B -> mirror(S)^C,
-    S -> mirror(B)^C. Valid for the symmetric partition (odd r; even r within one convention)."""
+    S -> mirror(B)^C. Valid for the symmetric partition (odd r; even r within one convention). Scalars in,
+    ints out; arrays broadcast like :func:`life_like`."""
+    beta, sigma = _codes(r, beta, sigma)
     mask = 2**r - 1
     b, s = _reverse_bits(sigma, r) ^ mask, _reverse_bits(beta, r) ^ mask
     return (int(b), int(s)) if b.ndim == 0 else (b, s)
@@ -134,4 +144,4 @@ def nonequivalent(r: int) -> np.ndarray:
     beta, sigma = np.meshgrid(np.arange(2**r), np.arange(2**r), indexing="ij")
     b2, s2 = equivalent(r, beta, sigma)
     keep = (beta < b2) | ((beta == b2) & (sigma <= s2))
-    return np.argwhere(keep).astype(np.int64)
+    return np.argwhere(keep)

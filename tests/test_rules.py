@@ -125,3 +125,35 @@ def test_majority_rule_is_a_fair_coin_at_ties():
     rules = fl.majority()
     assert rules.partition == fl.MAJORITY
     assert np.array_equal(rules.p, [[[0, 0.5, 1], [0, 0.5, 1]]])
+
+
+def test_rules_reject_nan_probabilities():
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        fl.Rules(fl.symmetric(3), np.full((1, 2, 3), np.nan))
+
+
+def test_rules_keep_a_private_read_only_copy_of_p():
+    p = np.zeros((1, 2, 3))
+    rules = fl.Rules(fl.symmetric(3), p)
+    p[0, 0, 0] = 7.0
+    assert rules.p[0, 0, 0] == 0.0
+    with pytest.raises(ValueError):
+        rules.p[0, 0, 0] = 1.0
+
+
+def test_take_accepts_a_scalar_index():
+    rules = fl.life_like(5, [1, 2, 3], 7)
+    assert np.array_equal(rules.take(1).p, rules.p[[1]])
+
+
+def test_even_convention_is_irrelevant_for_odd_r():
+    assert fl.symmetric(5) == fl.symmetric(5, "-+")
+    assert fl.symmetric(4) != fl.symmetric(4, "-+")
+
+
+def test_equivalent_validates_and_broadcasts_like_life_like():
+    with pytest.raises(ValueError, match=r"\[0, 32\)"):
+        fl.equivalent(5, 40, 0)
+    b, s = fl.equivalent(5, 3, [1, 2])
+    assert b.shape == s.shape == (2,)
+    assert (b[0], s[0]) == fl.equivalent(5, 3, 1)
