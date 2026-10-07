@@ -31,7 +31,12 @@ typedef u32 WORD;
 
 @pytest.mark.skipif(shutil.which("c++") is None, reason="no C++ compiler")
 @pytest.mark.parametrize(
-    "lanes", ["#define LLNA_L 1\n#define LLNA_LMASK 0x1u\n", "#define LLNA_L 32\n#define LLNA_LMASK 0xffffffffu\n"]
+    "lanes",
+    [
+        "#define LLNA_L 1\n#define LLNA_LMASK 0x1u\n#define LLNA_COOP 0\n",
+        "#define LLNA_L 32\n#define LLNA_LMASK 0xffffffffu\n#define LLNA_COOP 0\n",
+        "#define LLNA_L 4\n#define LLNA_LMASK 0xfu\n#define LLNA_COOP 1\n#define LLNA_SHFL_XOR(x, m) (x)\n",
+    ],
 )
 def test_header_parses_as_cpp14(tmp_path, lanes):
     src = tmp_path / "k.cpp"

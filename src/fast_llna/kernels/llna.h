@@ -10,7 +10,8 @@
  *             NCELL (partition cells), LLNA_D (random digits, 0 = deterministic), LLNA_CLAMP (0/1),
  *             LLNA_NP (noise period if it divides 32, else 32), LLNA_REPL (a 1 every LLNA_NP bits),
  *             LLNA_L (bits per node: 1..16 node-major fields with Wp == 1, or 32 for [N][Wp] words),
- *             LLNA_LMASK ((1 << LLNA_L) - 1)
+ *             LLNA_LMASK ((1 << LLNA_L) - 1), LLNA_COOP (1: coop > 1 lanes may share a node; needs the host
+ *             macro LLNA_SHFL_XOR(x, m), the value of x in lane ^ m)
  *
  * State layout: u32 [N][Wp]; replica r is bit r % 32 of word r / 32. One call computes the next state of
  * node i for the replicas in WORD w (w is a u32 word offset).
@@ -96,6 +97,22 @@ LLNA_FN WORD llna_update(LLNA_PTR(u32) S, LLNA_PTR(int) indptr, LLNA_PTR(int) in
             x = carry;
         }
     }
+#if LLNA_COOP
+    if (coop > 1) { /* sum the coop lanes' partial counts: XOR butterfly of bit-sliced ripple adds */
+        int kb = 0;
+        while ((k >> kb) != 0) kb++; /* bitlen(k): every partial sum and the total fit in kb planes */
+        for (int sh = 1; sh < coop; sh <<= 1) {
+            WORD carry = ZEROW;
+            for (int p = 0; p < PMAX; p++) {
+                if (p >= kb) break;
+                WORD a_ = c[p], y_ = LLNA_SHFL_XOR(a_, sh), ab_ = a_ ^ y_;
+                c[p] = ab_ ^ carry;
+                carry = (a_ & y_) | (carry & ab_);
+            }
+        }
+        lim = kb;
+    }
+#endif
     WORD s = LLNA_GET(S, i);
 
     /* g[b]: lanes whose count reaches the first q of segment b (thresholds < 2^lim) */

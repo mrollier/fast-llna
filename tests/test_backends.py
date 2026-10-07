@@ -2,7 +2,7 @@
 
 import numpy as np
 import pytest
-from _graphs import random_digraph, star_hub
+from _graphs import degree_graph, random_digraph, star_hub
 
 import fast_llna as fl
 
@@ -31,6 +31,20 @@ def twins(R, seed):
 def clamp(R, n, seed):
     rng = np.random.default_rng(seed)
     return rng.random((R, n)) < 0.1, rng.random((R, n)) < 0.5
+
+
+# mean degree 3.95 -> LLNA_HUB = 32: degree 32 takes the normal path, 33, 34, 64 and 140 the cooperative one;
+# the 140-degree hub is node 149 of 150, in the last (partial) SIMD group
+HUBS = degree_graph([2] * 7 + [32] + [2] * 32 + [33, 34] + [2] * 57 + [64] + [2] * 49 + [140], seed=21)
+
+
+def test_hub_threshold_scales_with_mean_degree():
+    from fast_llna.kernels import tables
+
+    rule = fl.life_like(5, 6, 28)
+    assert tables.build(HUBS, rule, fl.random_states(150, 1), None, 0, None, 1, 1).defines["LLNA_HUB"] == 32
+    dense = fl.ring(300, 20)  # degree 40
+    assert tables.build(dense, rule, fl.random_states(300, 1), None, 0, None, 1, 1).defines["LLNA_HUB"] == 160
 
 
 # (id, graph, R, rules, steps, simulate kwargs); init defaults to random states with R replicas
@@ -129,6 +143,17 @@ CASES = [
         {"record": 3},
     ),
     ("R20-strided-final", random_digraph(50, 1, 10, 15), 20, lambda R: mixed(9, R, 15), 5, {"record": "final"}),
+    (
+        "hubs-R1-stochastic-clamp",
+        HUBS,
+        1,
+        lambda R: stochastic(fl.symmetric(5), R, 21),
+        8,
+        {"clamp": clamp(1, 150, 21), "seed": 21},
+    ),
+    ("hubs-R3-mixed", HUBS, 3, lambda R: mixed(9, R, 22), 8, {"record": 2}),
+    ("hubs-R32-majority", HUBS, 32, lambda R: stochastic(fl.MAJORITY, R, 23), 8, {"seed": 23}),
+    ("star-last-R4", star_hub(200, 24, hub=199), 4, lambda R: fl.life_like(9, 72, 12), 6, {}),
 ]
 
 

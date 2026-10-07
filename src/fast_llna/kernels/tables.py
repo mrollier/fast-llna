@@ -134,6 +134,8 @@ def build(graph, rules, x0, clamp, seed, noise_period, Wp, L=32) -> Tables:
             "LLNA_REPL": f"{sum(1 << s for s in range(0, 32, period)):#x}u",
             "LLNA_L": L,
             "LLNA_LMASK": f"{(1 << L) - 1:#x}u",
+            "LLNA_COOP": 0,
+            "LLNA_HUB": max(32, 4 * int(np.ceil(deg.mean()))),
         }
     )
     t.k0, t.k1 = split_seed(seed)
