@@ -102,6 +102,33 @@ CASES = [
         6,
         {"noise_period": 16, "seed": 9},
     ),
+    ("ring5-R1", fl.ring(5), 1, lambda R: fl.life_like(3, 2, 5), 7, {}),
+    (
+        "twins-R2-noise1",
+        random_digraph(60, 2, 9, 11),
+        2,
+        lambda R: fl.majority(),
+        9,
+        {"noise_period": 1, "init": twins(1, 11)},
+    ),
+    (
+        "even4-R3-clamp",
+        random_digraph(77, 1, 20, 12),
+        3,
+        lambda R: mixed(4, R, 12, fl.symmetric(4)),
+        8,
+        {"clamp": clamp(3, 77, 12), "record": 2},
+    ),
+    ("stochastic-R5", random_digraph(61, 1, 12, 13), 5, lambda R: stochastic(fl.symmetric(5), R, 13), 7, {"seed": 5}),
+    (
+        "uniform5-R9-record",
+        random_digraph(45, 1, 16, 14),
+        9,
+        lambda R: mixed(5, R, 14, fl.uniform(5)),
+        6,
+        {"record": 3},
+    ),
+    ("R20-strided-final", random_digraph(50, 1, 10, 15), 20, lambda R: mixed(9, R, 15), 5, {"record": "final"}),
 ]
 
 
@@ -121,11 +148,12 @@ def test_backend_matches_reference(backend, case):
 @pytest.mark.skipif("cpu" not in fl.available_backends(), reason="no C compiler")
 @pytest.mark.parametrize("mode", ["words", "nodes"])
 @pytest.mark.parametrize("threads", [1, 3])
-def test_cpu_modes_and_thread_counts(mode, threads, monkeypatch):
+@pytest.mark.parametrize("R", [3, 300])
+def test_cpu_modes_and_thread_counts(mode, threads, R, monkeypatch):
     monkeypatch.setenv("FAST_LLNA_CPU_MODE", mode)
-    graph, R = random_digraph(70, 1, 15, 9), 300
+    graph = random_digraph(700, 1, 15, 9)
     rules = stochastic(fl.symmetric(5), R, 9)
-    init = fl.random_states(70, R, seed=9)
+    init = fl.random_states(700, R, seed=9)
     want = fl.simulate(graph, rules, init, 9, backend="reference", seed=3, record=3)
     got = fl.simulate(graph, rules, init, 9, backend="cpu", seed=3, record=3, threads=threads)
     assert np.array_equal(got.states.bits, want.states.bits)

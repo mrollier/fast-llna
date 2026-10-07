@@ -36,7 +36,7 @@ extern "C" __global__ void llna_step(const u32 *S, const int *indptr, const int 
     llna_idx i = (llna_idx)blockIdx.x * blockDim.y + threadIdx.y;
     if (w >= Wp || i >= n) return;
     nxt[i * Wp + w] = llna_update(S, indptr, indices, seg_off, seg_thr, seg_cell, one, hasf, frac, stream, cm,
-                                  cv, Wp, k0, k1, t, (int)i, w);
+                                  cv, Wp, k0, k1, t, (int)i, w, 0, 1);
 }
 """
 

@@ -8,7 +8,9 @@
  *             RANDW(k0, k1, t, i, stream, w, d) (random digit word d for the lanes of WORD w)
  *   defines   PMAX (count bit planes, >= bitlen(max degree)), SEGMAX (>= max segments per degree),
  *             NCELL (partition cells), LLNA_D (random digits, 0 = deterministic), LLNA_CLAMP (0/1),
- *             LLNA_NP (noise period if it divides 32, else 32), LLNA_REPL (a 1 every LLNA_NP bits)
+ *             LLNA_NP (noise period if it divides 32, else 32), LLNA_REPL (a 1 every LLNA_NP bits),
+ *             LLNA_L (bits per node: 1..16 node-major fields with Wp == 1, or 32 for [N][Wp] words),
+ *             LLNA_LMASK ((1 << LLNA_L) - 1)
  *
  * State layout: u32 [N][Wp]; replica r is bit r % 32 of word r / 32. One call computes the next state of
  * node i for the replicas in WORD w (w is a u32 word offset).
@@ -52,6 +54,13 @@ LLNA_FN u32 llna_rand(u32 k0, u32 k1, u32 t, u32 i, u32 sw, int d) {
 #define LLNA_OFF1(s_, j_) ((llna_idx)((s_) * NCELL + (j_)) * Wp)
 #define LLNA_OFFD(s_, j_) ((llna_idx)(((s_) * NCELL + (j_)) * LLNA_D + d) * Wp)
 
+#if LLNA_L < 32 /* node j's replicas are bits j*L .. j*L + L - 1 of the flat word array (Wp == 1, w == 0) */
+#define LLNA_GET(P, j)                                                                                 \
+    ((LOADW(P, ((llna_idx)(j) * LLNA_L) >> 5) >> (u32)(((llna_idx)(j) * LLNA_L) & 31)) & LLNA_LMASK)
+#else
+#define LLNA_GET(P, j) LOADW(P, (llna_idx)(j) * Wp + w)
+#endif
+
 /* acc = per lane, the TBL row of (own state, cell of the lane's count segment); telescoping over segments */
 #define LLNA_SELECT(acc, TBL, OFF)                                                                     \
     {                                                                                                  \
@@ -71,14 +80,15 @@ LLNA_FN WORD llna_update(LLNA_PTR(u32) S, LLNA_PTR(int) indptr, LLNA_PTR(int) in
                          LLNA_PTR(int) seg_off, LLNA_PTR(int) seg_thr, LLNA_PTR(int) seg_cell,
                          LLNA_PTR(u32) ONE, LLNA_PTR(u32) HASF, LLNA_PTR(u32) FRAC, LLNA_PTR(u32) STREAM,
                          LLNA_PTR(u32) CM, LLNA_PTR(u32) CV, llna_idx Wp, u32 k0, u32 k1, u32 t, int i,
-                         llna_idx w) {
-    /* bit-sliced count of living in-neighbours: c[p] holds bit p of the count, per lane */
-    int lo = indptr[i], k = indptr[i + 1] - lo, lim = 0;
+                         llna_idx w, int lane, int coop) {
+    /* bit-sliced count of living in-neighbours e = lane, lane + coop, ...: c[p] holds bit p of the count */
+    int lo = indptr[i], k = indptr[i + 1] - lo, lim = 0, m = 0;
     WORD c[PMAX];
     for (int p = 0; p < PMAX; p++) c[p] = ZEROW;
-    for (int e = 0; e < k; e++) {
-        WORD x = LOADW(S, (llna_idx)indices[lo + e] * Wp + w);
-        if (((e + 1) & e) == 0) lim++; /* lim = bitlen(e + 1): the count still fits in lim planes */
+    for (int e = lane; e < k; e += coop) {
+        WORD x = LLNA_GET(S, indices[lo + e]);
+        m++;
+        if ((m & (m - 1)) == 0) lim++; /* lim = bitlen(m): m added counts still fit in lim planes */
         for (int p = 0; p < PMAX; p++) {
             if (p >= lim) break;
             WORD carry = c[p] & x;
@@ -86,7 +96,7 @@ LLNA_FN WORD llna_update(LLNA_PTR(u32) S, LLNA_PTR(int) indptr, LLNA_PTR(int) in
             x = carry;
         }
     }
-    WORD s = LOADW(S, (llna_idx)i * Wp + w);
+    WORD s = LLNA_GET(S, i);
 
     /* g[b]: lanes whose count reaches the first q of segment b (thresholds < 2^lim) */
     int b0 = seg_off[k], nseg = seg_off[k + 1] - b0;
@@ -125,7 +135,7 @@ LLNA_FN WORD llna_update(LLNA_PTR(u32) S, LLNA_PTR(int) indptr, LLNA_PTR(int) in
     }
 #endif
 #if LLNA_CLAMP
-    out = (out & ~LOADW(CM, (llna_idx)i * Wp + w)) | LOADW(CV, (llna_idx)i * Wp + w);
+    out = (out & ~LLNA_GET(CM, i)) | LLNA_GET(CV, i);
 #endif
     return out;
 }

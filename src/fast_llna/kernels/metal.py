@@ -32,7 +32,7 @@ BODY = """
     if (w >= Wp || i >= n) return;
     nxt[(llna_idx)i * Wp + w] = llna_update(S, indptr, indices, seg_off, seg_thr, seg_cell, one, hasf, frac,
                                             stream, cm, cv, (llna_idx)Wp, params[2], params[3], params[4],
-                                            (int)i, (llna_idx)w);
+                                            (int)i, (llna_idx)w, 0, 1);
 """
 
 INPUTS = (

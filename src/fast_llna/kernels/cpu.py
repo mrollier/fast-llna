@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ..states import frame_bytes
 from . import tables
 
 PRELUDE = """
@@ -50,6 +51,34 @@ static inline WORD llna_randw(u32 k0, u32 k1, u32 t, int i, const u32 *st, llna_
     for (int j = 0; j < VW; j++) r[j] = llna_rand(k0, k1, t, (u32)i, st[w + j], d);
     return r;
 }
+#if LLNA_L < 32
+/* Narrow layout: update output words [i0, i1) (nodes 32/L * v .. 32/L * v + 32/L - 1 of word v) for nsteps
+   steps; after every rec-th step copy the words' bytes into frames[frame0 + (s + 1) / rec - 1] ([F][fb]). */
+void llna_cpu(const int *indptr, const int *indices, const int *seg_off, const int *seg_thr,
+              const int *seg_cell, const u32 *one, const u32 *hasf, const u32 *frac, const u32 *stream,
+              const u32 *cm, const u32 *cv, u32 *a, u32 *b, unsigned char *frames, llna_idx n, llna_idx nb,
+              llna_idx Wp, u32 k0, u32 k1, u32 t0, llna_idx i0, llna_idx i1, llna_idx w0, llna_idx w1,
+              int nsteps, int rec, llna_idx frame0) {
+    llna_idx fb = (n * LLNA_L + 7) / 8;
+    for (int s = 0; s < nsteps; s++) {
+        const u32 *cur = (s & 1) ? b : a;
+        u32 *nxt = (s & 1) ? a : b;
+        for (llna_idx v = i0; v < i1; v++) {
+            u32 acc = 0;
+            for (llna_idx i = v * (32 / LLNA_L); i < (v + 1) * (32 / LLNA_L) && i < n; i++) {
+                WORD o = llna_update(cur, indptr, indices, seg_off, seg_thr, seg_cell, one, hasf, frac, stream,
+                                     cm, cv, Wp, k0, k1, t0 + (u32)s, (int)i, 0, 0, 1);
+                acc |= o[0] << ((i * LLNA_L) & 31);
+            }
+            nxt[v] = acc;
+        }
+        if (rec > 0 && (s + 1) % rec == 0) {
+            llna_idx f = frame0 + (s + 1) / rec - 1, c0 = 4 * i0, c1 = 4 * i1 < fb ? 4 * i1 : fb;
+            if (c1 > c0) memcpy(frames + f * fb + c0, (const unsigned char *)nxt + c0, c1 - c0);
+        }
+    }
+}
+#else
 /* Run nsteps updates of nodes [i0, i1) x words [w0, w1), ping-ponging between buffers a and b (step s reads
    a if s is even). If rec > 0, after every rec-th step the first nb bytes of each node row are copied to
    frames[frame0 + (s + 1) / rec - 1] (canonical layout [n_frames][n][nb]). */
@@ -64,7 +93,7 @@ void llna_cpu(const int *indptr, const int *indices, const int *seg_off, const i
         for (llna_idx i = i0; i < i1; i++)
             for (llna_idx w = w0; w < w1; w += VW) {
                 WORD o = llna_update(cur, indptr, indices, seg_off, seg_thr, seg_cell, one, hasf, frac, stream,
-                                     cm, cv, Wp, k0, k1, t0 + (u32)s, (int)i, w);
+                                     cm, cv, Wp, k0, k1, t0 + (u32)s, (int)i, w, 0, 1);
                 memcpy(nxt + i * Wp + w, &o, sizeof o);
             }
         if (rec > 0 && (s + 1) % rec == 0) {
@@ -74,6 +103,7 @@ void llna_cpu(const int *indptr, const int *indices, const int *seg_off, const i
         }
     }
 }
+#endif
 """
 
 ARRAYS = ("indptr", "indices", "seg_off", "seg_thr", "seg_cell", "one", "hasf", "frac", "stream", "cm", "cv")
@@ -143,39 +173,43 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
     W = (R + 31) // 32
     VW = min(8, 1 << (W - 1).bit_length())
     Wp = -(-W // VW) * VW
-    tab = tables.build(graph, rules, x0, clamp, seed, noise_period, Wp)
+    L = tables.lanes(R) if R <= 32 else 32
+    narrow = L < 32
+    tab = tables.build(graph, rules, x0, clamp, seed, noise_period, Wp, L)
     tab.defines["VW"] = VW
     fn = _load(tab.source(PRELUDE, WRAPPER)).llna_cpu
     fn.restype = None
 
     nb = (R + 7) // 8
     rec = 0 if record == "final" else record
-    rows = np.empty((steps // rec + 1 if rec else 1, N, nb), np.uint8)  # the kernel records [N, nb] rows
+    F = steps // rec + 1 if rec else 1
+    # narrow: the kernel writes frames itself; else rows [N, nb], which are the frame bytes for R >= 17
+    out = np.empty((F, frame_bytes(N, R)) if narrow else (F, N, nb), np.uint8)
+    out[0] = x0.bits.reshape(out.shape[1:])
     state = tab.arrays["state"]
-    rows[0] = state.view(np.uint8).reshape(N, 4 * Wp)[:, :nb]
     bufs = [state.copy(), np.empty_like(state)]
     fixed = [_ptr(tab.arrays[k]) for k in ARRAYS]
-    L, U, C = ctypes.c_long, ctypes.c_uint32, ctypes.c_int
+    L_, U, C = ctypes.c_long, ctypes.c_uint32, ctypes.c_int
 
     def call(cur, nxt, i0, i1, w0, w1, nsteps, t, rec_, frame0):
         fn(
             *fixed,
             _ptr(cur),
             _ptr(nxt),
-            _ptr(rows),
-            L(N),
-            L(nb),
-            L(Wp),
+            _ptr(out),
+            L_(N),
+            L_(nb),
+            L_(Wp),
             U(tab.k0),
             U(tab.k1),
             U(t),
-            L(i0),
-            L(i1),
-            L(w0),
-            L(w1),
+            L_(i0),
+            L_(i1),
+            L_(w0),
+            L_(w1),
             C(nsteps),
             C(rec_),
-            L(frame0),
+            L_(frame0),
         )
 
     def ranges(stop, unit, parts):
@@ -187,19 +221,27 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
     # nodes mode pays ~0.3 ms of thread synchronisation per step: worth it only for big steps (M4-measured)
     big = groups >= 2 * nthreads or N * Wp < 1 << 21
     mode = os.environ.get("FAST_LLNA_CPU_MODE") or ("words" if big else "nodes")
+    nw = state.size  # narrow: output words per step
     with ThreadPoolExecutor(nthreads) as pool:
-        if mode == "words":  # each task owns a word slice for all steps
-            tasks = [(*bufs, 0, N, w0, w1, steps, t0, rec, 1) for w0, w1 in ranges(groups, VW, 4 * nthreads)]
-            list(pool.map(lambda a: call(*a), tasks))
+        if mode == "words":  # each task owns a word slice for all steps (narrow: one task)
+            if narrow:
+                parts = [(0, nw, 0, 1)]
+            else:
+                parts = [(0, N, w0, w1) for w0, w1 in ranges(groups, VW, 4 * nthreads)]
+            list(pool.map(lambda a: call(*a), [(*bufs, *p, steps, t0, rec, 1) for p in parts]))
             final = bufs[steps % 2]
-        else:  # every step split over node ranges
+        else:  # every step split over node ranges (narrow: word ranges aligned to 128-byte lines)
+            if narrow:
+                parts = [(i0, min(i1, nw), 0, 1) for i0, i1 in ranges(-(-nw // 32), 32, 4 * nthreads)]
+            else:
+                parts = [(i0, i1, 0, Wp) for i0, i1 in ranges(N, 1, 4 * nthreads)]
             for s in range(steps):
                 rec_ = 1 if rec and (s + 1) % rec == 0 else 0
                 f = (s + 1) // rec if rec_ else 0
-                tasks = [(*bufs, i0, i1, 0, Wp, 1, t0 + s, rec_, f) for i0, i1 in ranges(N, 1, 4 * nthreads)]
-                list(pool.map(lambda a: call(*a), tasks))
+                list(pool.map(lambda a: call(*a), [(*bufs, *p, 1, t0 + s, rec_, f) for p in parts]))
                 bufs.reverse()
             final = bufs[0]
     if record == "final":
-        rows[0] = final.view(np.uint8).reshape(N, 4 * Wp)[:, :nb]
-    return tables.rows_to_frames(rows, R)
+        fin = final.view(np.uint8)
+        out[0] = fin[: out.shape[1]] if narrow else fin.reshape(N, 4 * Wp)[:, :nb]
+    return out if narrow else out.reshape(F, -1)

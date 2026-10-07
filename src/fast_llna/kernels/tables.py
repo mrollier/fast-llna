@@ -69,6 +69,11 @@ def rows_to_frames(rows: np.ndarray, R: int) -> np.ndarray:
     return pack(x, bits_per_node(R))
 
 
+def lanes(R: int) -> int:
+    """Bits per node in the kernel state for R <= 32 replicas."""
+    return min(32, 1 << (R - 1).bit_length())
+
+
 @dataclass
 class Tables:
     defines: dict
@@ -81,8 +86,9 @@ class Tables:
         return defs + prelude + HEADER + wrapper
 
 
-def build(graph, rules, x0, clamp, seed, noise_period, Wp) -> Tables:
-    R = x0.n_replicas
+def build(graph, rules, x0, clamp, seed, noise_period, Wp, L=32) -> Tables:
+    R, N = x0.n_replicas, graph.n
+    Lk = L * Wp  # kernel bits per node
     deg = graph.degree
     kmax = int(deg.max())
     part = rules.partition
@@ -126,6 +132,8 @@ def build(graph, rules, x0, clamp, seed, noise_period, Wp) -> Tables:
             "LLNA_CLAMP": int(clamp is not None),
             "LLNA_NP": period,
             "LLNA_REPL": f"{sum(1 << s for s in range(0, 32, period)):#x}u",
+            "LLNA_L": L,
+            "LLNA_LMASK": f"{(1 << L) - 1:#x}u",
         }
     )
     t.k0, t.k1 = split_seed(seed)
@@ -137,9 +145,10 @@ def build(graph, rules, x0, clamp, seed, noise_period, Wp) -> Tables:
     a["frac"] = lanes(frac).ravel() if depth else np.zeros(1, np.uint32)
     a["stream"] = noise_streams(Wp, noise_period)
     if clamp is not None:
-        a["cm"] = _pack_words(clamp[0].T, Wp).ravel()
-        a["cv"] = _pack_words((clamp[0] & clamp[1]).T, Wp).ravel()
+        n_words = -(-N * Lk // 32)
+        a["cm"] = _words(pack(clamp[0], Lk), n_words)
+        a["cv"] = _words(pack(clamp[0] & clamp[1], Lk), n_words)
     else:
         a["cm"] = a["cv"] = np.zeros(1, np.uint32)
-    a["state"] = to_kernel(x0, 32 * Wp)  # flat [N * Wp]
+    a["state"] = to_kernel(x0, Lk)  # flat, ceil(N * Lk / 32) words
     return t
