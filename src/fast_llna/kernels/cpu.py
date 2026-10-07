@@ -138,12 +138,12 @@ def _ptr(a):
     return a.ctypes.data_as(ctypes.c_void_p)
 
 
-def run(graph, rules, x0, steps, record, clamp, seed, t0, stream, threads=None):
+def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=None):
     R, N = x0.n_replicas, graph.n
     W = (R + 31) // 32
     VW = min(8, 1 << (W - 1).bit_length())
     Wp = -(-W // VW) * VW
-    tab = tables.build(graph, rules, x0, clamp, seed, stream, Wp)
+    tab = tables.build(graph, rules, x0, clamp, seed, noise_period, Wp)
     tab.defines["VW"] = VW
     fn = _load(tab.source(PRELUDE, WRAPPER)).llna_cpu
     fn.restype = None

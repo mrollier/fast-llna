@@ -48,7 +48,8 @@ def random_states(n: int, replicas: int, density: float = 0.5, seed=None) -> Sta
 def defect_twins(states: States, flips: int = 1, seed=None) -> tuple[States, np.ndarray]:
     """Append to R replicas a twin each with ``flips`` distinct random nodes toggled. Twin of replica r is
     replica r + R; returns the 2R states and the [R, 2] index pairs. For stochastic rules pass
-    ``noise_period=R`` to ``simulate`` so twins share their random draws (needs R % 32 == 0)."""
+    ``noise_period=R`` to ``simulate`` so twins share their random draws (R must divide 32 or be a
+    multiple of 32)."""
     rng = np.random.default_rng(seed)
     x = states.to_bool()
     R, n = x.shape

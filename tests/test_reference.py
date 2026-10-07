@@ -141,3 +141,25 @@ def test_twins_share_noise_with_noise_period():
 def test_rule_count_must_match_replicas():
     with pytest.raises(ValueError, match="rules"):
         sim(fl.ring(10), fl.life_like(3, [1, 2], 5), fl.random_states(10, 3), 1)
+
+
+@pytest.mark.parametrize("period", [1, 2, 16])
+def test_twins_share_noise_for_periods_dividing_32(period):
+    g = fl.ring(64)
+    x, pairs = fl.defect_twins(fl.random_states(64, period, seed=1), flips=0)
+    shared = sim(g, fl.majority(), x, 8, seed=3, noise_period=period).hamming(pairs)
+    indep = sim(g, fl.majority(), x, 8, seed=3).hamming(pairs)
+    assert np.all(shared == 0) and indep.max() > 0
+
+
+def test_noise_period_beyond_replica_count_changes_nothing():
+    g, x = fl.ring(40), fl.random_states(40, 64, seed=2)
+    a = sim(g, fl.majority(), x, 6, seed=4, noise_period=64).states.bits
+    b = sim(g, fl.majority(), x, 6, seed=4).states.bits
+    assert np.array_equal(a, b)
+
+
+@pytest.mark.parametrize("period", [0, -32, 3, 24, 48])
+def test_noise_period_must_divide_or_be_multiple_of_32(period):
+    with pytest.raises(ValueError, match="noise_period"):
+        sim(fl.ring(10), fl.majority(), fl.random_states(10, 2), 1, noise_period=period)

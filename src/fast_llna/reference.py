@@ -17,18 +17,21 @@ def available() -> bool:
     return True
 
 
-def _digits(seed, t, n, stream, R, depth):
-    """Uniform random integers in [0, 2^depth) per (replica, node): the first ``depth`` binary digits of U."""
+def _digits(seed, t, n, R, depth, noise_period):
+    """Uniform random integers in [0, 2^depth) per (replica, node): the first ``depth`` binary digits of U.
+    Replica r uses the digits of replica r mod noise_period (rng module contract)."""
     nodes = np.arange(n, dtype=np.uint32)[None, :]
-    lane = (np.arange(R) % 32).astype(np.uint32)[:, None]
+    src = np.arange(R) if noise_period is None else np.arange(R) % noise_period
+    streams, which = np.unique(src // 32, return_inverse=True)
+    lane = (src % 32).astype(np.uint32)[:, None]
     u = np.zeros((R, n), np.uint64)
     for d in range(depth):
-        words = rule_words(seed, np.uint32(t), nodes, stream[:, None], d)  # [W, N]
-        u = (u << np.uint64(1)) | ((words[np.arange(R) // 32] >> lane) & 1).astype(np.uint64)
+        words = rule_words(seed, np.uint32(t), nodes, streams.astype(np.uint32)[:, None], d)  # [S, N]
+        u = (u << np.uint64(1)) | ((words[which] >> lane) & 1).astype(np.uint64)
     return u
 
 
-def run(graph, rules, x0: States, steps, record, clamp, seed, t0, stream, threads=None):
+def run(graph, rules, x0: States, steps, record, clamp, seed, t0, noise_period, threads=None):
     A = graph.adjacency().astype(np.int64)
     k = graph.degree.astype(np.int64)
     x = x0.to_bool()
@@ -44,7 +47,7 @@ def run(graph, rules, x0: States, steps, record, clamp, seed, t0, stream, thread
         alive = p == ONE
         frac = (p > 0) & (p < ONE)
         if depth and frac.any():
-            u = _digits(seed, t0 + step, graph.n, stream, R, depth)
+            u = _digits(seed, t0 + step, graph.n, R, depth, noise_period)
             alive |= frac & (u < (p >> np.uint64(32 - depth)))
         x = alive if clamp is None else np.where(clamp[0], clamp[1], alive)
         if record == "final" and step == steps - 1 or record != "final" and (step + 1) % record == 0:

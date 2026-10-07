@@ -76,12 +76,12 @@ def _pad(a):
     return np.pad(a, (0, max(0, 16 - a.size)))
 
 
-def run(graph, rules, x0, steps, record, clamp, seed, t0, stream, threads=None):
+def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=None):
     import mlx.core as mx
 
     R, N = x0.n_replicas, graph.n
     Wp = tables.gpu_words(R)
-    tab = tables.build(graph, rules, x0, clamp, seed, stream, Wp)
+    tab = tables.build(graph, rules, x0, clamp, seed, noise_period, Wp)
     kernel = _kernel(tab.source(PRELUDE, ""))
     fixed = [mx.array(_pad(tab.arrays[k])) for k in INPUTS[1:-1]]
     bx = min(Wp, 32)

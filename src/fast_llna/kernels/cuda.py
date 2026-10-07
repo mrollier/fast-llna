@@ -59,12 +59,12 @@ def _kernel(source: str):
     return cp.RawModule(code=source, options=("-std=c++14",)).get_function("llna_step")
 
 
-def run(graph, rules, x0, steps, record, clamp, seed, t0, stream, threads=None):
+def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=None):
     import cupy as cp
 
     R, N = x0.n_replicas, graph.n
     Wp = tables.gpu_words(R)
-    tab = tables.build(graph, rules, x0, clamp, seed, stream, Wp)
+    tab = tables.build(graph, rules, x0, clamp, seed, noise_period, Wp)
     source = tab.source(PRELUDE, WRAPPER)
     if os.environ.get("FAST_LLNA_DUMP"):
         with open(os.environ["FAST_LLNA_DUMP"], "w") as f:

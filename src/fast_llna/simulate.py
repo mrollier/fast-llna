@@ -64,7 +64,8 @@ def simulate(
         Randomness depends only on (seed, timestep, node, replica word), so a run of a + b steps equals a run
         of a steps continued with ``t0=a``.
     noise_period
-        Replicas r and r + noise_period draw the same random numbers (e.g. defect twins); a multiple of 32.
+        Replicas r and r + noise_period draw the same random numbers (e.g. defect twins); must divide 32 or be
+        a multiple of 32.
     backend
         "auto" or one of :data:`BACKENDS`; the environment variable FAST_LLNA_BACKEND overrides "auto".
     max_bytes
@@ -96,15 +97,11 @@ def simulate(
         mask, value = (np.broadcast_to(np.asarray(a, bool), (R, N)) for a in clamp)
         clamp = (mask, value)
         x0 = States.from_bool(np.where(mask, value, x0.to_bool()))
-    W = (R + 31) // 32
-    stream = np.arange(W, dtype=np.uint32)
-    if noise_period is not None:
-        if noise_period <= 0 or noise_period % 32:
-            raise ValueError("noise_period must be a positive multiple of 32")
-        stream %= np.uint32(noise_period // 32)
+    if noise_period is not None and (noise_period <= 0 or (32 % noise_period and noise_period % 32)):
+        raise ValueError("noise_period must divide 32 or be a positive multiple of 32")
     if backend == "auto":
         backend = os.environ.get("FAST_LLNA_BACKEND") or available_backends()[0]
     if backend not in BACKENDS:
         raise ValueError(f"unknown backend {backend!r}; choose from {BACKENDS}")
-    bits = _module(backend).run(graph, rules, x0, steps, record, clamp, seed, t0, stream, threads)
+    bits = _module(backend).run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads)
     return Trajectory(States(bits, R), times)

@@ -7,7 +7,8 @@
  *             ZEROW (all-zero WORD), LOADW(ptr, off) (WORD at u32 offset off), ANYW(x) (any bit set),
  *             RANDW(k0, k1, t, i, stream, w, d) (random digit word d for the lanes of WORD w)
  *   defines   PMAX (count bit planes, >= bitlen(max degree)), SEGMAX (>= max segments per degree),
- *             NCELL (partition cells), LLNA_D (random digits, 0 = deterministic), LLNA_CLAMP (0/1)
+ *             NCELL (partition cells), LLNA_D (random digits, 0 = deterministic), LLNA_CLAMP (0/1),
+ *             LLNA_NP (noise period if it divides 32, else 32), LLNA_REPL (a 1 every LLNA_NP bits)
  *
  * State layout: u32 [N][Wp]; replica r is bit r % 32 of word r / 32. One call computes the next state of
  * node i for the replicas in WORD w (w is a u32 word offset).
@@ -113,6 +114,9 @@ LLNA_FN WORD llna_update(LLNA_PTR(u32) S, LLNA_PTR(int) indptr, LLNA_PTR(int) in
             WORD pd;
             LLNA_SELECT(pd, FRAC, LLNA_OFFD)
             WORD u = RANDW(k0, k1, t, i, STREAM, w, d);
+#if LLNA_NP < 32 /* noise period p divides 32: lane r reads digit lane r % p */
+            u = (u & ((1u << LLNA_NP) - 1u)) * LLNA_REPL;
+#endif
             lt |= eq & ~u & pd;
             eq &= ~(u ^ pd);
             if (!ANYW(eq)) break;

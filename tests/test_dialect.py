@@ -24,6 +24,8 @@ typedef u32 WORD;
 #define NCELL 9
 #define LLNA_D 4
 #define LLNA_CLAMP 1
+#define LLNA_NP 4
+#define LLNA_REPL 0x11111111u
 """
 
 
@@ -61,7 +63,7 @@ def test_generated_cuda_source_parses(tmp_path):
     rules = fl.Rules(fl.symmetric(5), np.random.default_rng(0).choice([0, 1, 0.5, 0.3], size=(R, 2, 5)))
     clamp = (np.zeros((R, 30), bool), np.zeros((R, 30), bool))
     x0 = fl.random_states(30, R, seed=1)
-    tab = tables.build(g, rules, x0, clamp, 7, np.arange(9, dtype=np.uint32), tables.gpu_words(R))
+    tab = tables.build(g, rules, x0, clamp, 7, None, tables.gpu_words(R))
     src = tmp_path / "k.cpp"
     src.write_text(CUDA_STUB + tab.source(cuda.PRELUDE, cuda.WRAPPER))
     res = subprocess.run(

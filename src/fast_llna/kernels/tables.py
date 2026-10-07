@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..rng import quantize, split_seed
+from ..rng import noise_streams, quantize, split_seed
 
 HEADER = (Path(__file__).parent / "llna.h").read_text()
 PMAX_BUCKETS = (4, 8, 12, 16, 24, 32)
@@ -43,7 +43,7 @@ class Tables:
         return defs + prelude + HEADER + wrapper
 
 
-def build(graph, rules, x0, clamp, seed, stream, Wp) -> Tables:
+def build(graph, rules, x0, clamp, seed, noise_period, Wp) -> Tables:
     R, N = x0.n_replicas, graph.n
     deg = graph.degree
     kmax = int(deg.max())
@@ -78,6 +78,7 @@ def build(graph, rules, x0, clamp, seed, stream, Wp) -> Tables:
         return _pack_words(np.moveaxis(m, 0, -1), Wp)
 
     pmax = next(b for b in PMAX_BUCKETS if b >= kmax.bit_length())
+    period = noise_period if noise_period is not None and noise_period < 32 else 32
     t = Tables(
         defines={
             "PMAX": pmax,
@@ -85,6 +86,8 @@ def build(graph, rules, x0, clamp, seed, stream, Wp) -> Tables:
             "NCELL": part.ncell,
             "LLNA_D": depth,
             "LLNA_CLAMP": int(clamp is not None),
+            "LLNA_NP": period,
+            "LLNA_REPL": f"{sum(1 << s for s in range(0, 32, period)):#x}u",
         }
     )
     t.k0, t.k1 = split_seed(seed)
@@ -94,9 +97,7 @@ def build(graph, rules, x0, clamp, seed, stream, Wp) -> Tables:
     a["seg_cell"] = np.asarray(cells or [0, 0], np.int32)
     a["one"], a["hasf"] = lanes(one).ravel(), lanes(hasf).ravel()
     a["frac"] = lanes(frac).ravel() if depth else np.zeros(1, np.uint32)
-    st = np.zeros(Wp, np.uint32)
-    st[: len(stream)] = stream
-    a["stream"] = st
+    a["stream"] = noise_streams(Wp, noise_period)
     if clamp is not None:
         a["cm"] = _pack_words(clamp[0].T, Wp).ravel()
         a["cv"] = _pack_words((clamp[0] & clamp[1]).T, Wp).ravel()

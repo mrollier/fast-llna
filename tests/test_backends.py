@@ -94,6 +94,14 @@ CASES = [
         7,
         {"clamp": clamp(257, 60, 8), "record": 7},
     ),
+    (
+        "majority-R64-noise16",
+        fl.ring(50, 2),
+        64,
+        lambda R: fl.majority(),
+        6,
+        {"noise_period": 16, "seed": 9},
+    ),
 ]
 
 
