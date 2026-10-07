@@ -1,0 +1,11 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.so
+benchmarks/results/
+
+# thesis chapters (private reference material)
+docs/*.tex

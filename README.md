@@ -1,0 +1,98 @@
+# fast-llna
+
+Fast, exact simulation of Life-like network automata (LLNAs) on multicore CPUs, Apple GPUs (Metal) and NVIDIA GPUs (CUDA).
+
+A node with state `s`, in-degree `k` and `q` living in-neighbours updates according to the cell of its density `q/k`. Rules are written φ^r_{β,σ}: the node is born (s=0) if bit j of β is set, and survives (s=1) if bit j of σ is set, where j is the density cell. Rules can also be stochastic, for example Watts' majority rule with a fair coin at ρ = ½.
+
+Every backend reproduces an independent numpy reference **bit for bit**, including stochastic runs: randomness is counter-based (Philox4x32-10), so a given seed gives identical trajectories on every device.
+
+## Install
+
+```bash
+conda env create -f environment.yml && conda activate fast-llna
+pip install -e ".[metal,dev]"   # Apple Silicon
+pip install -e ".[cuda,dev]"    # NVIDIA (cupy-cuda12x)
+```
+
+The CPU backend compiles its kernel at first use with the system C compiler (`cc`, or `$CC`) and caches it in `~/.cache/fast_llna`.
+
+## Quick start
+
+```python
+import fast_llna as fl
+
+g = fl.moore_torus(30, 30)                       # or fl.Graph(A) for any 0/1 adjacency (scipy.sparse / numpy)
+rules = fl.life_like(5, *fl.nonequivalent(5).T)  # all 528 non-equivalent r=5 rules
+init = fl.random_states(g.n, 60, density=0.5, seed=0)
+rules, init = fl.product(rules, init)            # 528 x 60 = 31,680 replicas, one rule each
+traj = fl.simulate(g, rules, init, steps=100)    # backend="auto": cuda > metal > cpu
+rho = traj.density()                             # [T+1, R]
+
+x, pairs = fl.defect_twins(fl.random_states(g.n, 128, seed=1), flips=1, seed=2)
+traj = fl.simulate(g, fl.majority(), x, 100, seed=3, noise_period=128)  # twins share their coin flips
+delta = traj.hamming(pairs)                      # [T+1, 128]
+```
+
+**Specifying rules**
+- Partitions:
+  - `fl.symmetric(r)`: the complementation-symmetric partition. Even r uses R⁺ for dead nodes and R⁻ for living nodes; pass `even="-+"` for the swapped convention.
+  - `fl.uniform(r)`: the legacy left-closed partition.
+  - `fl.MAJORITY`.
+- Helpers:
+  - `fl.equivalent(r, β, σ)` returns the complement-equivalent rule.
+  - Custom stochastic rules are `fl.Rules(partition, p)`, where `p[i, s, j]` is the probability of being alive next.
+
+**Options**
+- `record`: `n` records every n-th step; `"final"` records only the last state.
+- `clamp`: `(mask, value)` pins nodes, per replica or for all replicas.
+- `t0`: continues a run.
+- Directed graphs: row i of the adjacency matrix lists the nodes that node i reads.
+
+**Output**
+
+Results are packed bits: `traj.states.bits[t, node, byte]`, with replica r stored in bit r % 8 of byte r // 8. `traj.states.to_bool()` unpacks them.
+
+## Performance (Apple M4, 10 CPU cores, 10-core GPU)
+
+| case | old `llna` (torch, CPU) | fast-llna CPU | fast-llna Metal |
+|---|---|---|---|
+| 528 rules × 60 inits, N=900, T=100, all steps recorded | 35 s | 0.17 s | 0.09 s |
+| same, final state only | – | 0.08 s | 0.05 s |
+| ER N=1e5, R=1024, T=100 | – | 0.36 s | 0.21 s |
+| ER N=1e7, R=1, T=1000, every 10th step recorded | – | – | 57 s |
+
+**Throughput** is 2–5·10¹⁰ node-updates/s once there are ≥ 32 replicas per node.
+
+**How it gets there**
+- Replicas are packed 32 per machine word.
+- Neighbours are counted with bit-sliced adders.
+- Rules are applied through exact integer density thresholds per degree, with no floats.
+- Every replica can carry a different rule at no extra cost.
+
+**Huge single networks with few replicas are memory-bound.** At N=1e7, random neighbour reads saturate the M4's DRAM. The NVIDIA numbers will come from `benchmarks/workstation_job.sh`.
+
+## Layout
+
+| path | purpose |
+|---|---|
+| `src/fast_llna/rules.py` | Partitions (exact integer cell index), rules, equivalence, enumeration |
+| `src/fast_llna/graph.py` | CSR in-neighbour graphs, ring and Moore torus, disjoint union |
+| `src/fast_llna/states.py` | Packed states, initial-condition helpers, `Trajectory` reducers |
+| `src/fast_llna/reference.py` | Slow numpy reference: the definition the other backends must match |
+| `src/fast_llna/kernels/llna.h` | The single kernel source shared by all three hosts (C / CUDA / Metal subset) |
+| `src/fast_llna/kernels/{cpu,metal,cuda}.py` | Thin hosts: compilation, launch and recording |
+| `benchmarks/` | `bench.py` scenarios, graph generators, `workstation_job.sh` for the NVIDIA machine |
+| `docs/design.md` | Design rationale and plan |
+
+## Tests
+
+```bash
+pytest -q
+```
+
+The test suite checks:
+- every partition against the thesis interval definitions in exact rational arithmetic;
+- a Game of Life glider and ECA rule 150;
+- complementation symmetry, for odd and even r, with the legacy partition as a negative control;
+- clamping, continuation and recording;
+- bit-identity of every available backend against the reference.

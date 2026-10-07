@@ -1,0 +1,14 @@
+name: fast-llna
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - scipy
+  - pytest
+  - ruff
+  - pip
+  - pip:
+      - -e .
+      # Apple Silicon GPU:  pip install -e ".[metal]"
+      # NVIDIA GPU:         pip install -e ".[cuda]"

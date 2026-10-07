@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fast-llna"
+version = "0.1.0"
+description = "Fast, exact simulation of Life-like network automata on CPU, Apple GPU and NVIDIA GPU"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26", "scipy>=1.12"]
+
+[project.optional-dependencies]
+metal = ["mlx>=0.32,<0.33; sys_platform == 'darwin' and platform_machine == 'arm64'"]
+cuda = ["cupy-cuda12x>=13"]
+dev = ["pytest>=8", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+fast_llna = ["kernels/*.h"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "cpu: needs a C compiler",
+    "metal: needs the MLX Metal backend",
+    "cuda: needs the CuPy CUDA backend",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "NPY"]
+ignore = ["E501", "E731"]
