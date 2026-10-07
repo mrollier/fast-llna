@@ -6,7 +6,9 @@ python benchmarks/bench.py --scenario all --backend cuda > results.jsonl
 
 import argparse
 import json
+import os
 import platform
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -17,6 +19,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 from graphs import barabasi_albert, chung_lu, erdos_renyi, rewired_torus  # noqa: E402
 
 import fast_llna as fl  # noqa: E402
+
+ROOT = Path(__file__).parent.parent
+try:
+    COMMIT = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+except OSError:
+    COMMIT = ""
 
 
 def measure(name, graph, rules, init, steps, backend, repeats=3, **kw):
@@ -43,6 +53,7 @@ def measure(name, graph, rules, init, steps, backend, repeats=3, **kw):
         "steady_s": round(steady, 4),
         "updates_per_s": graph.n * R * steps / steady,
         "machine": platform.platform(),
+        "commit": COMMIT,
     }
     print(json.dumps(row), flush=True)
     return row
@@ -78,35 +89,34 @@ def scale_N(backend):
         )
 
 
-def huge_N(backend):
-    for N in (100_000, 1_000_000, 10_000_000):
-        g = erdos_renyi(N, 8, seed=N)
-        for R in (1, 32):
-            measure(
-                "huge_N",
-                g,
-                fl.life_like(5, 6, 28),
-                fl.random_states(N, R, seed=R),
-                100,
-                backend,
-                repeats=1,
-                record="final",
-            )
-
-
-def _random(n, R, seed):
-    return fl.States.from_bool(np.random.default_rng(seed).random((R, n)) < 0.5)  # fast for huge N
-
-
 def small_R(backend):
-    """Few replicas, N up to 1e7: the narrow layout (L = pow2ceil(R) bits per node) and cooperative hubs."""
+    """Few replicas, N up to 1e7: the narrow layout (L = pow2ceil(R) bits per node) and cooperative hubs.
+    At N >= 1e6 the runs are short, so steady_s is mostly setup; per-step costs come from per_step."""
     for N in (1_000, 100_000, 1_000_000, 10_000_000):
         g = erdos_renyi(N, 8, seed=N)
         steps, repeats = (20, 1) if N >= 1_000_000 else (100, 3)
         for R in (1, 2, 4, 8, 16, 32):
-            measure("small_R", g, fl.life_like(5, 6, 28), _random(N, R, R), steps, backend, repeats, record="final")
+            init = fl.random_states(N, R, seed=R)
+            measure("small_R", g, fl.life_like(5, 6, 28), init, steps, backend, repeats, record="final")
     for name, g in (("power_law", chung_lu(10_000_000, 2.5, 8, seed=0)), ("moore", fl.moore_torus(3163, 3163))):
-        measure(f"small_R_{name}", g, fl.life_like(5, 6, 28), _random(g.n, 1, 1), 20, backend, 1, record="final")
+        init = fl.random_states(g.n, 1, seed=1)
+        measure(f"small_R_{name}", g, fl.life_like(5, 6, 28), init, 20, backend, 1, record="final")
+
+
+def per_step(backend):
+    """Per-step cost with setup excluded (the README's N=1e7, R=1 row): a fit over T = 1 and T = 20."""
+    graphs = (
+        ("ER", erdos_renyi(10_000_000, 8, seed=0)),
+        ("power_law", chung_lu(10_000_000, 2.5, 8, seed=0)),
+        ("moore", fl.moore_torus(3163, 3163)),
+    )
+    for name, g in graphs:
+        init = fl.random_states(g.n, 1, seed=1)
+        rule = fl.life_like(5, 6, 28)
+        rows = [measure(f"per_step_{name}", g, rule, init, T, backend, 1, record="final") for T in (1, 20)]
+        ms = (rows[1]["steady_s"] - rows[0]["steady_s"]) / 19 * 1e3
+        row = {"scenario": f"per_step_{name}", "backend": backend, "ms_per_step": round(ms, 2)}
+        print(json.dumps({**row, "setup_s": rows[0]["steady_s"]}))
 
 
 def hubs(backend):
@@ -140,17 +150,20 @@ def reducers(backend):
         traj.density() if what == "density" else traj.hamming(
             np.c_[np.arange(0, 31680, 2), np.arange(1, 31680, 2)]
         )
-        print(json.dumps({"scenario": f"reducer_{what}", "seconds": round(time.perf_counter() - t, 4)}))
+        secs = round(time.perf_counter() - t, 4)
+        print(json.dumps({"scenario": f"reducer_{what}", "backend": backend, "seconds": secs}))
 
 
-SCENARIOS = {f.__name__: f for f in (thesis, scale_R, scale_N, huge_N, small_R, hubs, overheads, reducers)}
+SCENARIOS = {f.__name__: f for f in (thesis, scale_R, scale_N, small_R, per_step, hubs, overheads, reducers)}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenario", default="thesis", choices=[*SCENARIOS, "all"])
     ap.add_argument("--backend", default="auto")
     a = ap.parse_args()
-    backend = fl.available_backends()[0] if a.backend == "auto" else a.backend
+    backend = a.backend
+    if backend == "auto":
+        backend = os.environ.get("FAST_LLNA_BACKEND") or fl.available_backends()[0]
     for name, f in SCENARIOS.items():
         if a.scenario in (name, "all"):
             f(backend)

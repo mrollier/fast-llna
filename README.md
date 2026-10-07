@@ -14,7 +14,7 @@ pip install -e ".[metal,dev]"   # Apple Silicon
 pip install -e ".[cuda,dev]"    # NVIDIA (cupy-cuda12x)
 ```
 
-The CPU backend compiles its kernel at first use with the system C compiler (`cc`, or `$CC`) and caches it in `~/.cache/fast_llna`.
+The CPU backend compiles its kernel at first use with the system C compiler (`cc`, or `$CC`) and caches it in `~/.cache/fast_llna` (`$XDG_CACHE_HOME/fast_llna`, or `$FAST_LLNA_CACHE`).
 
 ## Quick start
 
@@ -43,11 +43,18 @@ delta = traj.hamming(pairs)                      # [T+1, 128]
   - Custom stochastic rules are `fl.Rules(partition, p)`, where `p[i, s, j]` is the probability of being alive next.
 
 **Options**
-- `record`: `n` records every n-th step; `"final"` records only the last state.
+- `record`: `n` records every n-th step (`steps` must be a multiple of n); `"final"` records only the last state.
 - `clamp`: `(mask, value)` pins nodes, per replica or for all replicas.
 - `t0`: continues a run.
 - `noise_period`: replicas r and r + p share their random draws (defect twins under stochastic rules); p divides 32 or is a multiple of 32.
 - Directed graphs: row i of the adjacency matrix lists the nodes that node i reads.
+- `backend`: `"auto"` (cuda > metal > cpu) or an explicit name; `threads` sets the CPU worker count.
+
+**Environment variables**
+- `FAST_LLNA_BACKEND`: replaces `backend="auto"`.
+- `FAST_LLNA_CACHE`: directory for the compiled CPU kernels.
+- `FAST_LLNA_CPU_MODE`: `words` or `nodes`, forcing the CPU threading mode.
+- `FAST_LLNA_DUMP`: path to which the CUDA host writes its generated source.
 
 **Output**
 
@@ -61,7 +68,7 @@ Each recorded configuration is a flat little-endian bit array `traj.states.bits[
 | same, final state only | – | 0.08 s | 0.05 s |
 | ER N=1e5, R=1024, T=100 | – | 0.36 s | 0.21 s |
 | ER N=1e7, R=1, T=1000, every 10th step recorded (126 MB) | – | 24.9 s | 8.7 s |
-| N=1e7, R=1, per step (setup excluded): ER / power-law (γ=2.5) / Moore | – | 24 / 24 / 14 ms | 8.6 / 8.4 / 3.4 ms |
+| N=1e7, R=1, per step (setup excluded, `bench.py --scenario per_step`): ER / power-law (γ=2.5) / Moore | – | 24 / 24 / 14 ms | 8.6 / 8.4 / 3.4 ms |
 
 **Throughput** is 2–5·10¹⁰ node-updates/s once there are ≥ 32 replicas per node.
 

@@ -35,7 +35,7 @@ The odd-r symmetric path is exact (checked for r ≤ 25, k ≤ 1000).
    - Neighbour counts use bit-sliced ripple adds into planes.
    - The rule is applied with bit-sliced `count ≥ threshold` compares plus per-word lane masks. **Every lane may carry a different rule at no extra cost**, so rule sweeps pack rules into lanes.
    - Cost is about 4 integer ops and about k/8 bytes per node-update.
-3. **Coalesced, divergence-free GPU mapping.** A warp is one node × 32 consecutive words. That gives broadcast index loads, 128-byte coalesced state loads, and no degree divergence.
+3. **Coalesced, divergence-free GPU mapping (R > 32).** A warp is one node × 32 consecutive words. That gives broadcast index loads, 128-byte coalesced state loads, and no degree divergence. For R ≤ 32 one thread updates one node and a SIMD group counts hubs together (narrow-lanes spec).
 
 ## Design decisions
 
@@ -47,7 +47,7 @@ and GPU-cooperative hubs; see `docs/superpowers/specs/2026-10-07-narrow-lanes-de
 - the GE compare;
 - Philox4x32-10;
 - the MSB-first Bernoulli draw;
-- `update_word`.
+- `llna_update` (one node, one word) and `llna_group` (the GPU one-thread-per-node kernel body).
 
 Each host owns indexing, loops and stores. Python concatenates `#defines + llna.h + wrapper`.
 
@@ -56,7 +56,7 @@ Each host owns indexing, loops and stores. Python concatenates `#defines + llna.
 | | CPU | CUDA | Metal |
 |---|---|---|---|
 | build | `cc -O3 -mcpu/-march=native -shared`, ctypes (GIL released) | CuPy RawModule (NVRTC), `extern "C"` | MLX `mx.fast.metal_kernel` (defines + core in `header=`) |
-| `WORD` | `vector_size(32)` 8×u32 (explicit SIMD) | u32 | u32 |
+| `WORD` | `vector_size(4·VW)`, VW ∈ {1, 2, 4, 8} u32 lanes (explicit SIMD) | u32 | u32 |
 | `LLNA_FN` | `static inline` | `__device__ __forceinline__` | `inline` |
 | `LLNA_PTR` | `const u32*` | `const u32*` | `device const u32*` |
 | `MULHI` | u64 multiply >>32 | `__umulhi` | `mulhi` |
@@ -66,8 +66,8 @@ Each host owns indexing, loops and stores. Python concatenates `#defines + llna.
 - A test compiles the header as C++14 with `-fsyntax-only` to catch dialect slips locally.
 
 **Specialisation and caching.**
-- Specialise only on bucketed constants: PMAX ∈ {4, 8, 12, 16, 24}, D ∈ {0, 1, 2, 4, 8, 16, 32}, and the CLAMP flag.
-- Per-step scalars (t, N, seed) are passed in a params array, never as template parameters.
+- Specialise only on bucketed constants: PMAX ∈ {4, 8, 12, 16, 24, 32}, D ∈ {0, 1, 2, 4, 8, 16, 32}, SEGMAX, NCELL, the CLAMP flag, the lane width L (with LMASK, COOP) and the noise period (NP, REPL); the CPU adds VW.
+- Per-step and per-graph scalars (t, N, seed, hub threshold) are passed as arguments, never as defines.
 - The cache key is the source hash plus the compiler version, flags, and CPU model, because SIGILL is a risk on shared HPC homes.
 - Writes are atomic (temp file + `os.replace`).
 
@@ -97,15 +97,14 @@ U_r = Σ_d bit_{r&31}(word_d(t, i, r>>5)) · 2^-(d+1)    # MSB-first: independen
 next = 1 iff U_r < p_r ;  p rounded to 2^-32 ; p == 1 via its own ONE mask ; warn if 0 < p rounds to 0
 ```
 - `purpose` is 0 for rule outputs; 1 and 2 are reserved for α-async and output noise.
-- `stream[w] = w mod (noise_period/32)`, so defect twins share noise. Otherwise the δ of stochastic rules never relaxes to 0.
+- `noise_period` makes replica r draw the digits of replica r mod p (`stream[w] = w mod (p/32)` for multiples of 32; digit lanes repeated every p bits for p | 32), so defect twins share noise. Otherwise the δ of stochastic rules never relaxes to 0.
 - `t0` lets a run continue: 2×50 steps equals 1×100 steps.
 - Checked against the Random123 known-answer vectors, e.g. ctr=0, key=0 gives `6627e8d5 e169c58d bc57ac4c 9b00dbd8`.
 
-**Canonical public format.** Superseded by the flat node-major layout of the narrow-lanes spec (frames of
-ceil(N·L/8) bytes).
-- Packed states are uint8 `[..., N, ceil(R/8)]` (`packbits` over replicas, little bit order, padding bits 0).
-- On little-endian machines this is the same memory as the u32 or vector word layout, so no conversion is needed. Import asserts little-endian.
-- Known limit: R=1 wastes 7/8 of each byte. N=1e7 × T=1000 recorded every step is 10 GB, so use `record=n` stride or "final".
+**Canonical public format.** A frame is a flat little-endian bit array of ceil(N·L/8) bytes with replica r of
+node i at bit i·L + r, L = pow2ceil(R) for R ≤ 8 and 8·ceil(R/8) beyond (narrow-lanes spec, section 5). For
+R ≥ 8 these are the bytes of the rows `[N, ceil(R/8)]`; for R = 1 a frame is the node bitset. Little-endian
+hosts only (not asserted; no supported target is big-endian).
 
 **Conventions.**
 - `A[i,j] = 1` means j influences i: row i lists the in-neighbours, k_i is the in-degree. Undirected inputs must be symmetric (not enforced).
@@ -131,7 +130,7 @@ traj = fl.simulate(g, rules, init, steps, record=1 | n | "final", clamp=(mask, v
                    seed=0, t0=0, noise_period=None, backend="auto", threads=None,
                    max_bytes=4e9)                    # size guard -> clear error with projected size
 traj.density(); traj.hamming(pairs); traj.states.to_bool(); traj.final()
-fl.available_backends()                   # auto: cuda > metal > cpu (small problems -> cpu); FAST_LLNA_BACKEND env
+fl.available_backends()                   # auto: cuda > metal > cpu; FAST_LLNA_BACKEND env
 ```
 
 `rules` has K=1 (broadcast) or K=R rows. Reducers run as chunked numpy `unpackbits` on the host. A C reducer is added only if reducers exceed ~30% of wall time.
@@ -185,7 +184,7 @@ benchmarks/bench.py, benchmarks/graphs.py (ER, BA, rewired torus), benchmarks/wo
 | Degree-sorted node relabelling | Hub divergence when Wp < 32 |
 | Persistent multi-step kernel, threadgroup slabs | Launch overhead > 20% |
 | Carry-save adders | Counting dominates in SASS or profiles |
-| Strategy "nodes as lanes" (node-packed bitsets, ballot output) | R=1, N ≥ 1e6 gathers dominate, or output size bites; the RNG contract already keeps it bit-identical |
+| Strategy "nodes as lanes" (node-packed bitsets, ballot output) | Done 2026-10-07 as narrow lanes (L = pow2ceil(R) bits per node for R ≤ 32) |
 | C reducer | Reducers > 30% of wall time |
 
 **Deferred features**, each designed-in through the `purpose` RNG slot and the select/mask hook:
@@ -223,10 +222,10 @@ benchmarks/bench.py, benchmarks/graphs.py (ER, BA, rewired torus), benchmarks/wo
 - Reducers match naive numpy.
 
 **`test_backends.py`:** every available backend must be bit-identical to the reference over a pairwise matrix (< 60 s):
-- graphs: ring, Moore, ER, BA hub, star k=1023 (PMAX bucket), directed, union;
-- R ∈ {1, 31, 32, 33, 64, 65, 257, 1056};
-- partitions: symmetric 5/9/4, uniform 5, majority;
-- options: clamp, stochastic, record 1/3/final, twins with `noise_period`, mixed rules per lane, threads 1 vs many, both CPU modes forced.
+- graphs: ring, Moore, random digraphs, a degree-sequence graph with hubs above the cooperative threshold, star k=1023 (PMAX bucket), union;
+- R ∈ {1, 2, 3, 4, 5, 8, 9, 16, 20, 31, 32, 33, 64, 65, 100, 256, 257, 1056};
+- partitions: symmetric 5/9/4/6, uniform 5, majority;
+- options: clamp ([R, N] and [N]), stochastic, record 1/2/3/7/final, t0, steps=0, twins with `noise_period` (1, 16, 128), mixed rules per lane, threads 1 vs many, both CPU modes forced, every node forced through the cooperative hub path.
 
 **`test_dialect.py`:** C++14 syntax-only compile of `llna.h` with stub macros.
 
@@ -234,7 +233,7 @@ benchmarks/bench.py, benchmarks/graphs.py (ER, BA, rewired torus), benchmarks/wo
 1. Thesis case: 528×60 on a rewired torus, p = 0.2, N = 900, T = 100; record every step vs final; compare with the 35 s baseline.
 2. Scale R: N = 900, R from 32 to 1e6.
 3. Scale N: R = 1024, N from 1e2 to 1e5.
-4. Huge N: N from 1e5 to 1e7, ER and Moore, R ∈ {1, 32}.
+4. Small R: N from 1e3 to 1e7 × R ∈ {1, …, 32} on ER, plus power-law and Moore at 1e7; `per_step` fits the per-step cost at N=1e7, R=1 with setup excluded.
 5. Hubs: BA vs ER.
 6. Overheads: stochastic vs deterministic; clamp on vs off.
 7. Reducer timing.

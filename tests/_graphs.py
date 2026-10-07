@@ -6,13 +6,7 @@ import fast_llna as fl
 
 def random_digraph(n, kmin, kmax, seed):
     """Directed graph where node i reads kmin..kmax distinct random other nodes."""
-    rng = np.random.default_rng(seed)
-    rows, cols = [], []
-    for i in range(n):
-        k = rng.integers(kmin, kmax + 1)
-        rows += [i] * k
-        cols += list(rng.choice(np.delete(np.arange(n), i), size=k, replace=False))
-    return fl.Graph(sp.coo_array((np.ones(len(rows)), (rows, cols)), shape=(n, n)))
+    return degree_graph(np.random.default_rng(seed).integers(kmin, kmax + 1, size=n), seed)
 
 
 def star_hub(n, seed, hub=0):

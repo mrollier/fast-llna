@@ -130,21 +130,13 @@ def test_size_guard_reports_projected_size():
         sim(fl.ring(100), fl.life_like(3, 2, 5), fl.random_states(100, 64), 1000, max_bytes=1e4)
 
 
-def test_twins_share_noise_with_noise_period():
-    g = fl.ring(64)
-    x, pairs = fl.defect_twins(fl.random_states(64, 32, seed=1), flips=0)
-    shared = sim(g, fl.majority(), x, 8, seed=3, noise_period=32).hamming(pairs)
-    indep = sim(g, fl.majority(), x, 8, seed=3).hamming(pairs)
-    assert np.all(shared == 0) and indep.max() > 0
-
-
 def test_rule_count_must_match_replicas():
     with pytest.raises(ValueError, match="rules"):
         sim(fl.ring(10), fl.life_like(3, [1, 2], 5), fl.random_states(10, 3), 1)
 
 
-@pytest.mark.parametrize("period", [1, 2, 16])
-def test_twins_share_noise_for_periods_dividing_32(period):
+@pytest.mark.parametrize("period", [1, 2, 16, 32])
+def test_twins_share_noise_with_noise_period(period):
     g = fl.ring(64)
     x, pairs = fl.defect_twins(fl.random_states(64, period, seed=1), flips=0)
     shared = sim(g, fl.majority(), x, 8, seed=3, noise_period=period).hamming(pairs)

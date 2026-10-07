@@ -6,6 +6,9 @@ build/
 dist/
 *.so
 benchmarks/results/
+*.jsonl
+workstation.log
+.superpowers/
 
 # thesis chapters (private reference material)
 docs/*.tex

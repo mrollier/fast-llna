@@ -102,7 +102,8 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
         bx = min(Wp, 32)
         by = 256 // bx
         grid, block, p1 = ((N + by - 1) // by, Wp // bx), (bx, by), Wp
-    consts = (np.int64(N), np.int64(p1), np.int32(tables.hub_threshold(graph)), np.uint32(tab.k0), np.uint32(tab.k1))
+    hub = np.int32(tables.hub_threshold(graph))
+    consts = (np.int64(N), np.int64(p1), hub, np.uint32(tab.k0), np.uint32(tab.k1))
 
     rec = 0 if record == "final" else record
     frames = np.empty((steps // rec + 1 if rec else 1, frame_bytes(N, R)), np.uint8)

@@ -1,6 +1,7 @@
 # Narrow lanes: node-major state with L bits per node
 
-Status: design approved 2026-10-07; spec under review.
+Status: implemented and merged 2026-10-07 (commits 71022d1..e16ac77); notes marked *as built* record where the
+implementation departed from the text.
 
 ## Problem
 
@@ -82,19 +83,23 @@ v1. The benchmark gate below checks that claim, and an override is added only if
   is bit r of word 0. Randomness uses the same Philox digit words, so v1 and narrow runs are bit-identical
   and both match the reference.
 
-Host defines: `LLNA_L`, `LLNA_LMASK`, `LLNA_COOP` (0 on CPU), `LLNA_HUB` (see below), and the host macro
-`LLNA_SHFL_XOR`. On the CPU, WORD stays a 1-lane vector for R ≤ 32, as in v1.
+Host defines: `LLNA_L`, `LLNA_LMASK`, `LLNA_COOP` (0 on CPU), and the host macros `LLNA_SHFL_XOR`,
+`LLNA_BALLOT`, `LLNA_CTZ`. On the CPU, WORD stays a 1-lane vector for R ≤ 32, as in v1.
+
+*As built:* the hub threshold is a runtime argument, not a define, so a different mean degree does not
+recompile. The node-kernel body (steps 1–3 and the output assembly below) is `llna_group` in `llna.h`,
+shared by the Metal and CUDA hosts. The L = 1 integer-count path of section 4 is in the core too.
 
 ### 3. GPU hosts (Metal, CUDA): node kernel for R ≤ 32
 
 - **Grid.** The grid is 1-D with one thread per node, padded to a multiple of 256, and threadgroups of 256.
   All SIMD groups are therefore full and lane = i % 32. Threads with i ≥ N take part in shuffles with k = 0.
 - **Hubs.**
-  1. A ballot marks the lanes whose node has degree > `LLNA_HUB`.
+  1. A ballot marks the lanes whose node has degree > the hub threshold.
   2. For each marked lane h (ascending), the whole SIMD group calls `llna_update` for node
      `i − lane + h` with `coop = 32`, and lane h keeps the result.
   3. Then every non-hub lane with i < N updates its own node with `coop = 1`.
-- **Hub threshold.** `LLNA_HUB = max(32, 4·⌈mean degree⌉)`. Cooperation costs a 5-step butterfly per hub,
+- **Hub threshold.** `max(32, 4·⌈mean degree⌉)` (`tables.hub_threshold`). Cooperation costs a 5-step butterfly per hub,
   so the threshold scales with typical degrees. The spike's optimum on ER and power-law graphs was 32.
 - **Output assembly.** Each lane shifts its L output bits to `(i·L) % 32`. A butterfly over
   `log2(32/L)` steps (`simd_shuffle_xor`, `__shfl_xor_sync`) ORs them together, and lanes with
@@ -109,7 +114,8 @@ Host defines: `LLNA_L`, `LLNA_LMASK`, `LLNA_COOP` (0 on CPU), `LLNA_HUB` (see be
 - **Modes.** Nodes mode (per-step tasks) and words mode (one task for all steps) keep the v1 heuristic.
 - **No hub handling.** It is not needed on the CPU.
 - **Scalar special case.** An `LLNA_L == 1` scalar-count path is added only if benchmarks show that
-  bit-sliced counting costs more than 15% at L = 1.
+  bit-sliced counting costs more than 15% at L = 1. *As built:* added (commit b93ffe1); on the power-law
+  graph the bit-sliced path cost 2–7× more per step.
 
 ### 5. Output layout (public)
 
@@ -127,7 +133,7 @@ Ls = 8·ceil(R/8)      if R > 8      (whole bytes per node: the v1 layout, flatt
   every step takes 1.25 GB, against 10 GB in v1.
 - The kernel state equals the frame bytes whenever `Ls == L` (R ≤ 16 or 25 ≤ R ≤ 32), in which case
   recording is a contiguous copy. For R = 17…24 and R > 32, recording copies `ceil(R/8)` bytes per node, as
-  in v1. `tables.frame()` implements both cases for all hosts.
+  in v1. `tables.to_frame()` implements both cases for all hosts.
 - `simulate`'s size guard uses the new frame size.
 
 ### 6. Shared noise for small replica counts (addition, needs approval)
@@ -159,11 +165,11 @@ Test-first, with each test watched failing.
 - `test_backends.py`, new cases, each bit-exact against the reference on every backend:
   - R ∈ {2, 3, 5, 9}, covering L = 2, 4, 8, 16, with stochastic rules, clamping and record strides;
   - R = 2 twins with `noise_period=1` under the majority rule;
-  - hubs with R ∈ {1, 3, 32}, using `star_hub` and a power-law graph with degrees above `LLNA_HUB`, so the
+  - hubs with R ∈ {1, 3, 32}, using `star_hub` and a power-law graph with degrees above the hub threshold, so the
     cooperative path runs for L = 1, 4 and 32 with stochastic rules and clamping;
   - N not a multiple of 32/L, to cover partial last words.
-- `test_dialect.py`: the header compiles as C++14 with `LLNA_L` ∈ {1, 32} and `LLNA_COOP` ∈ {0, 1}, and the
-  generated CUDA node kernel compiles with stubs.
+- `test_dialect.py`: the header compiles as C++14 with `LLNA_L` ∈ {1, 4, 32} × `LLNA_COOP` ∈ {0, 1}, and the
+  generated CUDA source compiles with stubs under `-Werror`.
 - Mutation checks: break the gather shift, the butterfly carry, the hub lane selection and the output
   shuffle; each must fail a test.
 
