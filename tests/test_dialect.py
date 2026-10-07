@@ -55,11 +55,15 @@ struct dim3_ { unsigned x, y, z; };
 static dim3_ blockIdx, threadIdx, blockDim;
 static inline unsigned __umulhi(unsigned a, unsigned b) { return (unsigned)(((unsigned long)a * b) >> 32); }
 template <class T> static inline T __ldg(const T *p) { return *p; }
+static inline unsigned __ballot_sync(unsigned, int p) { return p ? 1u : 0u; }
+template <class T> static inline T __shfl_xor_sync(unsigned, T v, int) { return v; }
+static inline int __ffs(unsigned x) { return __builtin_ffs((int)x); }
 """
 
 
 @pytest.mark.skipif(shutil.which("c++") is None, reason="no C++ compiler")
-def test_generated_cuda_source_parses(tmp_path):
+@pytest.mark.parametrize("R", [3, 257])
+def test_generated_cuda_source_parses(tmp_path, R):
     """The CUDA host cannot run here; at least its full generated source (stochastic + clamp) must parse,
     with stand-ins for the CUDA builtins."""
     import numpy as np
@@ -67,14 +71,14 @@ def test_generated_cuda_source_parses(tmp_path):
     import fast_llna as fl
     from fast_llna.kernels import cuda, tables
 
-    R, g = 257, fl.moore_torus(5, 6)
+    g = fl.moore_torus(5, 6)
     rules = fl.Rules(fl.symmetric(5), np.random.default_rng(0).choice([0, 1, 0.5, 0.3], size=(R, 2, 5)))
     clamp = (np.zeros((R, 30), bool), np.zeros((R, 30), bool))
     x0 = fl.random_states(30, R, seed=1)
-    tab = tables.build(g, rules, x0, clamp, 7, None, tables.gpu_words(R))
+    Wp = tables.gpu_words(R)
+    tab = tables.build(g, rules, x0, clamp, 7, None, Wp, tables.lanes(R) if Wp == 1 else 32)
+    tab.defines["LLNA_COOP"] = 1
     src = tmp_path / "k.cpp"
     src.write_text(CUDA_STUB + tab.source(cuda.PRELUDE, cuda.WRAPPER))
-    res = subprocess.run(
-        ["c++", "-std=c++14", "-fsyntax-only", "-Wall", str(src)], capture_output=True, text=True
-    )
+    res = subprocess.run(["c++", "-std=c++14", "-fsyntax-only", "-Wall", str(src)], capture_output=True, text=True)
     assert res.returncode == 0, res.stderr
