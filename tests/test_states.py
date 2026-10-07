@@ -64,3 +64,11 @@ def test_trajectory_reducers_match_naive(R):
     pairs = np.array([[0, R - 1], [R // 2, 0], [R - 1, R - 1]])
     assert np.allclose(traj.hamming(pairs), (x[:, pairs[:, 0]] ^ x[:, pairs[:, 1]]).mean(axis=2))
     assert np.array_equal(traj.final().to_bool(), x[-1])
+
+
+def test_states_rejects_bits_that_do_not_match_n_and_R():
+    bits = fl.States.from_bool(np.ones((8, 4), bool)).bits  # 4 nodes x 8 replicas: 4 bytes
+    with pytest.raises(ValueError, match="bytes"):
+        fl.States(bits.reshape(4, 1), 8, 4)  # v1 row shape [N, nb]
+    with pytest.raises(ValueError, match="bytes"):
+        fl.States(bits, 8, 3)

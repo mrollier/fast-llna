@@ -47,6 +47,14 @@ class States:
     n_replicas: int
     n: int
 
+    def __post_init__(self):
+        want = frame_bytes(self.n, self.n_replicas)
+        if np.ndim(self.bits) == 0 or np.shape(self.bits)[-1] != want:
+            raise ValueError(
+                f"bits of shape {np.shape(self.bits)} do not end in the {want} bytes that {self.n} nodes x "
+                f"{self.n_replicas} replicas need"
+            )
+
     @classmethod
     def from_bool(cls, x) -> States:
         """From a boolean array ``[..., R, N]``."""

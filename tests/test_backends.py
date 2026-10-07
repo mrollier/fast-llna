@@ -182,3 +182,11 @@ def test_cpu_modes_and_thread_counts(mode, threads, R, monkeypatch):
     want = fl.simulate(graph, rules, init, 9, backend="reference", seed=3, record=3)
     got = fl.simulate(graph, rules, init, 9, backend="cpu", seed=3, record=3, threads=threads)
     assert np.array_equal(got.states.bits, want.states.bits)
+
+
+@pytest.mark.parametrize("backend", [*BACKENDS, "reference"])
+def test_init_must_be_one_configuration_per_replica(backend):
+    g, rule = fl.ring(40), fl.life_like(3, 2, 5)
+    traj = fl.simulate(g, rule, fl.random_states(40, 2, seed=0), 3, backend="reference")
+    with pytest.raises(ValueError, match="final"):
+        fl.simulate(g, rule, traj.states, 2, backend=backend)  # [T, ...] frames instead of traj.final()

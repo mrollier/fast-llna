@@ -72,6 +72,8 @@ def simulate(
         Refuse to allocate a recorded trajectory larger than this.
     """
     x0 = init if isinstance(init, States) else States.from_bool(init)
+    if x0.bits.ndim != 1:
+        raise ValueError("init must be one configuration per replica, [R, N]; for a trajectory use traj.final()")
     R, N = x0.n_replicas, graph.n
     if x0.n != N:
         raise ValueError(f"initial states have {x0.n} nodes, graph has {N}")
