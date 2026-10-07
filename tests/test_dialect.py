@@ -20,6 +20,9 @@ typedef u32 WORD;
 #define ANYW(x) ((x) != 0u)
 #define LLNA_LANE0(x) (x)
 #define RANDW(k0, k1, t, i, st, w, d) llna_rand(k0, k1, t, (u32)(i), (st)[w], d)
+#define LLNA_SHFL_XOR(x, m) (x)
+#define LLNA_BALLOT(b) ((b) ? 1u : 0u)
+#define LLNA_CTZ(x) __builtin_ctz(x)
 #define PMAX 8
 #define SEGMAX 16
 #define NCELL 9
@@ -29,24 +32,24 @@ typedef u32 WORD;
 #define LLNA_REPL 0x11111111u
 """
 
+needs_cxx = pytest.mark.skipif(shutil.which("c++") is None, reason="no C++ compiler")
 
-@pytest.mark.skipif(shutil.which("c++") is None, reason="no C++ compiler")
-@pytest.mark.parametrize(
-    "lanes",
-    [
-        "#define LLNA_L 1\n#define LLNA_LMASK 0x1u\n#define LLNA_COOP 0\n",
-        "#define LLNA_L 32\n#define LLNA_LMASK 0xffffffffu\n#define LLNA_COOP 0\n",
-        "#define LLNA_L 4\n#define LLNA_LMASK 0xfu\n#define LLNA_COOP 1\n#define LLNA_SHFL_XOR(x, m) (x)\n",
-        "#define LLNA_L 1\n#define LLNA_LMASK 0x1u\n#define LLNA_COOP 1\n#define LLNA_SHFL_XOR(x, m) (x)\n",
-    ],
-)
-def test_header_parses_as_cpp14(tmp_path, lanes):
-    src = tmp_path / "k.cpp"
-    src.write_text(STUB + lanes + HEADER)
+
+def _parses(path):
     res = subprocess.run(
-        ["c++", "-std=c++14", "-fsyntax-only", "-Wall", "-Werror", str(src)], capture_output=True, text=True
+        ["c++", "-std=c++14", "-fsyntax-only", "-Wall", "-Werror", str(path)], capture_output=True, text=True
     )
     assert res.returncode == 0, res.stderr
+
+
+@needs_cxx
+@pytest.mark.parametrize("coop", [0, 1])
+@pytest.mark.parametrize("L", [1, 4, 32])
+def test_header_parses_as_cpp14(tmp_path, L, coop):
+    lanes = f"#define LLNA_L {L}\n#define LLNA_LMASK {(1 << L) - 1:#x}u\n#define LLNA_COOP {coop}\n"
+    src = tmp_path / "k.cpp"
+    src.write_text(STUB + lanes + HEADER)
+    _parses(src)
 
 
 CUDA_STUB = """
@@ -63,8 +66,8 @@ static inline int __ffs(unsigned x) { return __builtin_ffs((int)x); }
 """
 
 
-@pytest.mark.skipif(shutil.which("c++") is None, reason="no C++ compiler")
-@pytest.mark.parametrize("R", [1, 3, 257])
+@needs_cxx
+@pytest.mark.parametrize("R", [1, 3, 20, 257])
 def test_generated_cuda_source_parses(tmp_path, R):
     """The CUDA host cannot run here; at least its full generated source (stochastic + clamp) must parse,
     with stand-ins for the CUDA builtins."""
@@ -76,11 +79,7 @@ def test_generated_cuda_source_parses(tmp_path, R):
     g = fl.moore_torus(5, 6)
     rules = fl.Rules(fl.symmetric(5), np.random.default_rng(0).choice([0, 1, 0.5, 0.3], size=(R, 2, 5)))
     clamp = (np.zeros((R, 30), bool), np.zeros((R, 30), bool))
-    x0 = fl.random_states(30, R, seed=1)
-    Wp = tables.gpu_words(R)
-    tab = tables.build(g, rules, x0, clamp, 7, None, Wp, tables.lanes(R) if Wp == 1 else 32)
-    tab.defines["LLNA_COOP"] = 1
+    tab = tables.build(g, rules, fl.random_states(30, R, seed=1), clamp, 7, None, tables.gpu_words(R))
     src = tmp_path / "k.cpp"
-    src.write_text(CUDA_STUB + tab.source(cuda.PRELUDE, cuda.WRAPPER))
-    res = subprocess.run(["c++", "-std=c++14", "-fsyntax-only", "-Wall", str(src)], capture_output=True, text=True)
-    assert res.returncode == 0, res.stderr
+    src.write_text(CUDA_STUB + cuda.source(tab))
+    _parses(src)

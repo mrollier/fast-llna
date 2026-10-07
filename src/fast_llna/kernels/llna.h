@@ -12,10 +12,12 @@
  *             LLNA_NP (noise period if it divides 32, else 32), LLNA_REPL (a 1 every LLNA_NP bits),
  *             LLNA_L (bits per node: 1..16 node-major fields with Wp == 1, or 32 for [N][Wp] words),
  *             LLNA_LMASK ((1 << LLNA_L) - 1), LLNA_COOP (1: coop > 1 lanes may share a node; needs the host
- *             macro LLNA_SHFL_XOR(x, m), the value of x in lane ^ m)
+ *             macros LLNA_SHFL_XOR(x, m) (the value of x in lane ^ m), LLNA_BALLOT(b) (u32 mask of the
+ *             lanes where b is true) and LLNA_CTZ(x) (index of the lowest set bit of x != 0))
  *
- * State layout: u32 [N][Wp]; replica r is bit r % 32 of word r / 32. One call computes the next state of
- * node i for the replicas in WORD w (w is a u32 word offset).
+ * State layout: LLNA_L < 32: a flat u32 array in which node j's replicas are bits j * L .. j * L + L - 1
+ * (Wp == 1, w == 0). LLNA_L == 32: u32 [N][Wp]; replica r is bit r % 32 of word r / 32. llna_update computes
+ * the next state of node i for the replicas in WORD w (w is a u32 word offset).
  */
 
 typedef struct {
@@ -52,6 +54,8 @@ LLNA_FN u32 llna_rand(u32 k0, u32 k1, u32 t, u32 i, u32 sw, int d) {
     return m == 0 ? r.x : m == 1 ? r.y : m == 2 ? r.z : r.w;
 }
 
+/* The macros below expand inside llna_update and read its locals: Wp, w, s (own state), seg_cell, nseg, b0,
+ * g[] (segment reach masks), bs (the single segment when L == 1) and d (the digit loop index, LLNA_OFFD). */
 #define LLNA_SEL(m, a, b) ((b) ^ ((m) & ((a) ^ (b))))
 #define LLNA_OFF1(s_, j_) ((llna_idx)((s_) * NCELL + (j_)) * Wp)
 #define LLNA_OFFD(s_, j_) ((llna_idx)(((s_) * NCELL + (j_)) * LLNA_D + d) * Wp)
@@ -177,3 +181,32 @@ LLNA_FN WORD llna_update(LLNA_PTR(u32) S, LLNA_PTR(int) indptr, LLNA_PTR(int) in
 #endif
     return out;
 }
+
+#if LLNA_COOP
+/* GPU node kernel (Wp == 1, one lane per node): lane = i % 32 of a complete 32-lane SIMD group whose nodes are
+ * i - lane .. i - lane + 31 (the grid is padded; lanes with i >= n only help). The group counts every node of
+ * degree > hub together (coop = 32), each other lane updates its own node, then the 32 / L lanes that share an
+ * output word OR their fields. Returns that word; the host stores it from lane % (32 / L) == 0 at word index
+ * i * L / 32 when that is below the word count. */
+LLNA_FN WORD llna_group(LLNA_PTR(u32) S, LLNA_PTR(int) indptr, LLNA_PTR(int) indices, LLNA_PTR(int) seg_off,
+                        LLNA_PTR(int) seg_thr, LLNA_PTR(int) seg_cell, LLNA_PTR(u32) ONE, LLNA_PTR(u32) HASF,
+                        LLNA_PTR(u32) FRAC, LLNA_PTR(u32) STREAM, LLNA_PTR(u32) CM, LLNA_PTR(u32) CV, u32 k0,
+                        u32 k1, u32 t, int n, int hub, int i, int lane) {
+    int big = i < n && indptr[i + 1] - indptr[i] > hub;
+    u32 hubs = LLNA_BALLOT(big);
+    WORD out = ZEROW;
+    while (hubs != 0u) { /* the whole group counts each hub; its own lane keeps the result */
+        int h = LLNA_CTZ(hubs);
+        hubs &= hubs - 1u;
+        WORD o = llna_update(S, indptr, indices, seg_off, seg_thr, seg_cell, ONE, HASF, FRAC, STREAM, CM, CV,
+                             (llna_idx)1, k0, k1, t, i - lane + h, 0, lane, 32);
+        if (lane == h) out = o;
+    }
+    if (i < n && !big)
+        out = llna_update(S, indptr, indices, seg_off, seg_thr, seg_cell, ONE, HASF, FRAC, STREAM, CM, CV,
+                          (llna_idx)1, k0, k1, t, i, 0, 0, 1);
+    WORD v = out << (u32)(((llna_idx)i * LLNA_L) & 31);
+    for (int sh = 1; sh < 32 / LLNA_L; sh <<= 1) v |= LLNA_SHFL_XOR(v, sh);
+    return v;
+}
+#endif

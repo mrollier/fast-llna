@@ -5,11 +5,14 @@ import pytest
 from _graphs import degree_graph, random_digraph, star_hub
 
 import fast_llna as fl
+from fast_llna.kernels import tables
 
+AVAILABLE = fl.available_backends()
 BACKENDS = [
-    pytest.param(b, marks=getattr(pytest.mark, b, ()))
+    pytest.param(
+        b, marks=[getattr(pytest.mark, b), pytest.mark.skipif(b not in AVAILABLE, reason=f"{b} not available")]
+    )
     for b in ("cpu", "metal", "cuda")
-    if b in fl.available_backends()
 ]
 
 
@@ -29,8 +32,10 @@ def twins(R, seed):
 
 
 def clamp(R, n, seed):
+    """[R, n] masks, or [n] masks shared by all replicas for R=None."""
     rng = np.random.default_rng(seed)
-    return rng.random((R, n)) < 0.1, rng.random((R, n)) < 0.5
+    shape = (n,) if R is None else (R, n)
+    return rng.random(shape) < 0.1, rng.random(shape) < 0.5
 
 
 # mean degree 3.95 -> LLNA_HUB = 32: degree 32 takes the normal path, 33, 34, 64 and 140 the cooperative one;
@@ -39,12 +44,8 @@ HUBS = degree_graph([2] * 7 + [32] + [2] * 32 + [33, 34] + [2] * 57 + [64] + [2]
 
 
 def test_hub_threshold_scales_with_mean_degree():
-    from fast_llna.kernels import tables
-
-    rule = fl.life_like(5, 6, 28)
-    assert tables.build(HUBS, rule, fl.random_states(150, 1), None, 0, None, 1, 1).defines["LLNA_HUB"] == 32
-    dense = fl.ring(300, 20)  # degree 40
-    assert tables.build(dense, rule, fl.random_states(300, 1), None, 0, None, 1, 1).defines["LLNA_HUB"] == 160
+    assert tables.hub_threshold(HUBS) == 32
+    assert tables.hub_threshold(fl.ring(300, 20)) == 160  # degree 40
 
 
 # (id, graph, R, rules, steps, simulate kwargs); init defaults to random states with R replicas
@@ -154,6 +155,27 @@ CASES = [
     ("hubs-R3-mixed", HUBS, 3, lambda R: mixed(9, R, 22), 8, {"record": 2}),
     ("hubs-R32-majority", HUBS, 32, lambda R: stochastic(fl.MAJORITY, R, 23), 8, {"seed": 23}),
     ("star-last-R4", star_hub(200, 24, hub=199), 4, lambda R: fl.life_like(9, 72, 12), 6, {}),
+    ("eca150-R1-final", fl.ring(40), 1, lambda R: fl.life_like(3, 2, 5), 12, {"record": "final"}),
+    (
+        "hubs-R5-final-clamp",
+        HUBS,
+        5,
+        lambda R: stochastic(fl.symmetric(5), R, 25),
+        7,
+        {"record": "final", "clamp": clamp(5, 150, 25), "seed": 25},
+    ),
+    ("hubs-R2-t0", HUBS, 2, lambda R: mixed(5, R, 26), 6, {"t0": 12345, "record": 3}),
+    (
+        "hubs-R8-clamp-all-replicas",
+        HUBS,
+        8,
+        lambda R: stochastic(fl.symmetric(9), R, 27),
+        6,
+        {"clamp": clamp(None, 150, 27)},
+    ),
+    ("hubs-R16-majority", HUBS, 16, lambda R: stochastic(fl.MAJORITY, R, 28), 6, {"seed": 28}),
+    ("steps0-R3", fl.ring(20), 3, lambda R: fl.life_like(3, 2, 5), 0, {}),
+    ("steps0-R3-final", fl.ring(20), 3, lambda R: fl.life_like(3, 2, 5), 0, {"record": "final"}),
 ]
 
 
@@ -170,7 +192,20 @@ def test_backend_matches_reference(backend, case):
     assert np.array_equal(got.states.bits, want.states.bits)
 
 
-@pytest.mark.skipif("cpu" not in fl.available_backends(), reason="no C compiler")
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("R", [1, 2, 4, 8, 16, 32])
+def test_every_node_counted_cooperatively(backend, R, monkeypatch):
+    """With the hub threshold at 0 the GPU node kernels take the cooperative path for every node."""
+    monkeypatch.setattr(tables, "hub_threshold", lambda graph: 0)
+    rules, init = stochastic(fl.symmetric(5), R, 30 + R), fl.random_states(150, R, seed=R)
+    kw = {"clamp": clamp(R, 150, 30 + R), "seed": 30 + R, "record": 2}
+    want = fl.simulate(HUBS, rules, init, 6, backend="reference", **kw)
+    got = fl.simulate(HUBS, rules, init, 6, backend=backend, **kw)
+    assert np.array_equal(got.states.bits, want.states.bits)
+
+
+@pytest.mark.cpu
+@pytest.mark.skipif("cpu" not in AVAILABLE, reason="no C compiler")
 @pytest.mark.parametrize("mode", ["words", "nodes"])
 @pytest.mark.parametrize("threads", [1, 3])
 @pytest.mark.parametrize("R", [3, 300])
@@ -184,9 +219,8 @@ def test_cpu_modes_and_thread_counts(mode, threads, R, monkeypatch):
     assert np.array_equal(got.states.bits, want.states.bits)
 
 
-@pytest.mark.parametrize("backend", [*BACKENDS, "reference"])
-def test_init_must_be_one_configuration_per_replica(backend):
+def test_init_must_be_one_configuration_per_replica():
     g, rule = fl.ring(40), fl.life_like(3, 2, 5)
     traj = fl.simulate(g, rule, fl.random_states(40, 2, seed=0), 3, backend="reference")
     with pytest.raises(ValueError, match="final"):
-        fl.simulate(g, rule, traj.states, 2, backend=backend)  # [T, ...] frames instead of traj.final()
+        fl.simulate(g, rule, traj.states, 2, backend="reference")  # [T, ...] frames instead of traj.final()

@@ -1,7 +1,7 @@
 """Apple GPU backend: llna.h as MLX custom Metal kernels, one launch per step.
 
-R <= 32: one thread per node; a SIMD group counts each hub (degree > LLNA_HUB) together, then assembles
-32/L nodes per output word with XOR shuffles. R > 32: thread (x, y) updates replica word x of node y.
+R <= 32: one thread per node (llna_group in llna.h: a SIMD group counts each hub together and assembles 32/L
+nodes per output word with XOR shuffles). R > 32: thread (x, y) updates replica word x of node y.
 """
 
 from __future__ import annotations
@@ -27,8 +27,11 @@ typedef u32 WORD;
 #define LLNA_LANE0(x) (x)
 #define RANDW(k0, k1, t, i, st, w, d) llna_rand(k0, k1, t, (u32)(i), (st)[w], d)
 #define LLNA_SHFL_XOR(x, m) simd_shuffle_xor((x), (ushort)(m))
+#define LLNA_BALLOT(b) ((u32)(simd_vote::vote_t)simd_ballot((bool)(b)))
+#define LLNA_CTZ(x) ((int)ctz(x))
 """
 
+# params: [n, Wp or word count, k0, k1, t, hub threshold]
 BODY = """
     uint w = thread_position_in_grid.x, i = thread_position_in_grid.y;
     uint n = params[0], Wp = params[1];
@@ -39,41 +42,14 @@ BODY = """
 """
 
 NODE_BODY = """
-    uint i = thread_position_in_grid.x, lane = thread_index_in_simdgroup, n = params[0];
-    bool hub = i < n && indptr[i + 1] - indptr[i] > LLNA_HUB;
-    uint hubs = (uint)((simd_vote::vote_t)simd_ballot(hub));
-    WORD out = 0u;
-    while (hubs != 0u) {  /* the whole SIMD group counts each hub; its own lane keeps the result */
-        uint h = ctz(hubs);
-        hubs &= hubs - 1u;
-        WORD o = llna_update(S, indptr, indices, seg_off, seg_thr, seg_cell, one, hasf, frac, stream, cm, cv,
-                             (llna_idx)1, params[2], params[3], params[4], (int)(i - lane + h), 0, (int)lane, 32);
-        if (lane == h) out = o;
-    }
-    if (i < n && !hub)
-        out = llna_update(S, indptr, indices, seg_off, seg_thr, seg_cell, one, hasf, frac, stream, cm, cv,
-                          (llna_idx)1, params[2], params[3], params[4], (int)i, 0, 0, 1);
-    WORD v = out << ((i * LLNA_L) & 31u);
-    for (uint sh = 1u; sh < 32u / LLNA_L; sh <<= 1u) v |= simd_shuffle_xor(v, (ushort)sh);
+    uint i = thread_position_in_grid.x, lane = thread_index_in_simdgroup;
+    WORD v = llna_group(S, indptr, indices, seg_off, seg_thr, seg_cell, one, hasf, frac, stream, cm, cv,
+                        params[2], params[3], params[4], (int)params[0], (int)params[5], (int)i, (int)lane);
     ulong wi = ((ulong)i * LLNA_L) >> 5;
     if ((lane & (32u / LLNA_L - 1u)) == 0u && wi < params[1]) nxt[wi] = v;
 """
 
-INPUTS = (
-    "S",
-    "indptr",
-    "indices",
-    "seg_off",
-    "seg_thr",
-    "seg_cell",
-    "one",
-    "hasf",
-    "frac",
-    "stream",
-    "cm",
-    "cv",
-    "params",
-)
+INPUTS = ("S", *tables.ARRAYS, "params")
 EVAL_EVERY = 32
 
 
@@ -107,17 +83,17 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
     R, N = x0.n_replicas, graph.n
     Wp = tables.gpu_words(R)
     node = Wp == 1  # R <= 32: one thread per node, L bits per node
-    L = tables.lanes(R) if node else 32
-    tab = tables.build(graph, rules, x0, clamp, seed, noise_period, Wp, L)
+    tab = tables.build(graph, rules, x0, clamp, seed, noise_period, Wp)
     tab.defines["LLNA_COOP"] = 1
     kernel = _kernel(tab.source(PRELUDE, ""), NODE_BODY if node else BODY)
-    fixed = [mx.array(_pad(tab.arrays[k])) for k in INPUTS[1:-1]]
-    state = tab.arrays["state"]
+    fixed = [mx.array(_pad(tab.arrays[k])) for k in tables.ARRAYS]
+    cur = mx.array(_pad(tab.arrays["state"]))
     if node:
-        grid, group, p1 = (-(-N // 256) * 256, 1, 1), (256, 1, 1), state.size
+        grid, group, p1 = (-(-N // 256) * 256, 1, 1), (256, 1, 1), tab.arrays["state"].size
     else:
         bx = min(Wp, 32)
         grid, group, p1 = (Wp, N, 1), (bx, max(1, min(256 // bx, N)), 1), Wp
+    hub = tables.hub_threshold(graph)
 
     rec = 0 if record == "final" else record
     frames = np.empty((steps // rec + 1 if rec else 1, frame_bytes(N, R)), np.uint8)
@@ -125,7 +101,7 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
     pending = []  # (frame index, lazy mx array)
 
     def frame(a, f):
-        tables.to_frame(np.asarray(a).view(np.uint8), N, R, L * Wp, frames[f])
+        tables.to_frame(np.asarray(a).view(np.uint8), N, R, tab.Lk, frames[f])
 
     def flush():
         mx.eval(cur, *(a for _, a in pending))
@@ -133,15 +109,13 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
             frame(a, f)
         pending.clear()
 
-    cur = mx.array(_pad(state))
-    size = cur.size
     for s in range(steps):
-        params = mx.array(np.array([N, p1, tab.k0, tab.k1, (t0 + s) % 2**32], np.uint32))
+        params = mx.array(np.array([N, p1, tab.k0, tab.k1, t0 + s, hub], np.uint32))
         (cur,) = kernel(
             inputs=[cur, *fixed, params],
             grid=grid,
             threadgroup=group,
-            output_shapes=[(size,)],
+            output_shapes=[cur.shape],
             output_dtypes=[mx.uint32],
         )
         if rec and (s + 1) % rec == 0:

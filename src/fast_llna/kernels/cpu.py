@@ -1,8 +1,9 @@
 """CPU backend: llna.h compiled by the system C compiler, called through ctypes from a thread pool.
 
 Two parallel modes (FAST_LLNA_CPU_MODE overrides the choice):
-  words  each task owns a slice of replica words and runs all steps (no synchronisation), used when there
-         are enough words to keep every thread busy;
+  words  each task owns a slice of replica words and runs all steps without synchronisation; with one word
+         per node (R <= 256) that is a single task, chosen for graphs below ~8e5 edges where the per-step
+         join of nodes mode costs more than it saves;
   nodes  every step is split into node ranges, joined before the next step (few replicas, huge graphs).
 """
 
@@ -52,62 +53,52 @@ static inline WORD llna_randw(u32 k0, u32 k1, u32 t, int i, const u32 *st, llna_
     for (int j = 0; j < VW; j++) r[j] = llna_rand(k0, k1, t, (u32)i, st[w + j], d);
     return r;
 }
-#if LLNA_L < 32
-/* Narrow layout: update output words [i0, i1) (nodes 32/L * v .. 32/L * v + 32/L - 1 of word v) for nsteps
-   steps; after every rec-th step copy the words' bytes into frames[frame0 + (s + 1) / rec - 1] ([F][fb]). */
+/* Run nsteps updates, ping-ponging between buffers a and b (step s reads a if s is even), of the task's
+   share of the state: output words [i0, i1) (32 / L nodes each) in the narrow layout, else nodes [i0, i1) x
+   words [w0, w1) of the [n][Wp] layout. If rec > 0, after every rec-th step the task's bytes of the new state
+   are copied into frame frame0 + (s + 1) / rec - 1 of frames ([F][frame bytes]; a frame of the word layout
+   is the rows [n][nb]). */
 void llna_cpu(const int *indptr, const int *indices, const int *seg_off, const int *seg_thr,
               const int *seg_cell, const u32 *one, const u32 *hasf, const u32 *frac, const u32 *stream,
               const u32 *cm, const u32 *cv, u32 *a, u32 *b, unsigned char *frames, llna_idx n, llna_idx nb,
               llna_idx Wp, u32 k0, u32 k1, u32 t0, llna_idx i0, llna_idx i1, llna_idx w0, llna_idx w1,
               int nsteps, int rec, llna_idx frame0) {
-    llna_idx fb = (n * LLNA_L + 7) / 8;
     for (int s = 0; s < nsteps; s++) {
         const u32 *cur = (s & 1) ? b : a;
         u32 *nxt = (s & 1) ? a : b;
+        u32 t = t0 + (u32)s;
+        int record = rec > 0 && (s + 1) % rec == 0;
+        llna_idx f = record ? frame0 + (s + 1) / rec - 1 : 0;
+#if LLNA_L < 32
         for (llna_idx v = i0; v < i1; v++) {
             u32 acc = 0;
             for (llna_idx i = v * (32 / LLNA_L); i < (v + 1) * (32 / LLNA_L) && i < n; i++) {
                 WORD o = llna_update(cur, indptr, indices, seg_off, seg_thr, seg_cell, one, hasf, frac, stream,
-                                     cm, cv, Wp, k0, k1, t0 + (u32)s, (int)i, 0, 0, 1);
+                                     cm, cv, Wp, k0, k1, t, (int)i, 0, 0, 1);
                 acc |= o[0] << ((i * LLNA_L) & 31);
             }
             nxt[v] = acc;
         }
-        if (rec > 0 && (s + 1) % rec == 0) {
-            llna_idx f = frame0 + (s + 1) / rec - 1, c0 = 4 * i0, c1 = 4 * i1 < fb ? 4 * i1 : fb;
+        if (record) {
+            llna_idx fb = (n * LLNA_L + 7) / 8, c0 = 4 * i0, c1 = 4 * i1 < fb ? 4 * i1 : fb;
             if (c1 > c0) memcpy(frames + f * fb + c0, (const unsigned char *)nxt + c0, c1 - c0);
         }
-    }
-}
 #else
-/* Run nsteps updates of nodes [i0, i1) x words [w0, w1), ping-ponging between buffers a and b (step s reads
-   a if s is even). If rec > 0, after every rec-th step the first nb bytes of each node row are copied to
-   frames[frame0 + (s + 1) / rec - 1] (canonical layout [n_frames][n][nb]). */
-void llna_cpu(const int *indptr, const int *indices, const int *seg_off, const int *seg_thr,
-              const int *seg_cell, const u32 *one, const u32 *hasf, const u32 *frac, const u32 *stream,
-              const u32 *cm, const u32 *cv, u32 *a, u32 *b, unsigned char *frames, llna_idx n, llna_idx nb,
-              llna_idx Wp, u32 k0, u32 k1, u32 t0, llna_idx i0, llna_idx i1, llna_idx w0, llna_idx w1,
-              int nsteps, int rec, llna_idx frame0) {
-    for (int s = 0; s < nsteps; s++) {
-        const u32 *cur = (s & 1) ? b : a;
-        u32 *nxt = (s & 1) ? a : b;
         for (llna_idx i = i0; i < i1; i++)
             for (llna_idx w = w0; w < w1; w += VW) {
                 WORD o = llna_update(cur, indptr, indices, seg_off, seg_thr, seg_cell, one, hasf, frac, stream,
-                                     cm, cv, Wp, k0, k1, t0 + (u32)s, (int)i, w, 0, 1);
+                                     cm, cv, Wp, k0, k1, t, (int)i, w, 0, 1);
                 memcpy(nxt + i * Wp + w, &o, sizeof o);
             }
-        if (rec > 0 && (s + 1) % rec == 0) {
-            llna_idx f = frame0 + (s + 1) / rec - 1, c0 = 4 * w0, c1 = 4 * w1 < nb ? 4 * w1 : nb;
+        if (record) {
+            llna_idx c0 = 4 * w0, c1 = 4 * w1 < nb ? 4 * w1 : nb;
             for (llna_idx i = i0; c1 > c0 && i < i1; i++)
                 memcpy(frames + (f * n + i) * nb + c0, (const unsigned char *)(nxt + i * Wp) + c0, c1 - c0);
         }
+#endif
     }
 }
-#endif
 """
-
-ARRAYS = ("indptr", "indices", "seg_off", "seg_thr", "seg_cell", "one", "hasf", "frac", "stream", "cm", "cv")
 
 
 def _compiler():
@@ -169,53 +160,42 @@ def _ptr(a):
     return a.ctypes.data_as(ctypes.c_void_p)
 
 
+def _ranges(stop, unit, parts):
+    edges = np.unique(np.linspace(0, stop, min(stop, parts) + 1).astype(int)) * unit
+    return list(zip(edges[:-1], edges[1:], strict=True))
+
+
 def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=None):
     R, N = x0.n_replicas, graph.n
     W = (R + 31) // 32
     VW = min(8, 1 << (W - 1).bit_length())
     Wp = -(-W // VW) * VW
-    L = tables.lanes(R) if R <= 32 else 32
-    narrow = L < 32
-    tab = tables.build(graph, rules, x0, clamp, seed, noise_period, Wp, L)
+    tab = tables.build(graph, rules, x0, clamp, seed, noise_period, Wp)
     tab.defines["VW"] = VW
+    narrow = tab.Lk < 32
     fn = _load(tab.source(PRELUDE, WRAPPER)).llna_cpu
     fn.restype = None
 
     nb = (R + 7) // 8
     rec = 0 if record == "final" else record
-    F = steps // rec + 1 if rec else 1
-    # narrow: the kernel writes frames itself; else rows [N, nb], which are the frame bytes for R >= 17
-    out = np.empty((F, frame_bytes(N, R)) if narrow else (F, N, nb), np.uint8)
-    out[0] = x0.bits.reshape(out.shape[1:])
-    state = tab.arrays["state"]
-    bufs = [state.copy(), np.empty_like(state)]
-    fixed = [_ptr(tab.arrays[k]) for k in ARRAYS]
+    out = np.empty((steps // rec + 1 if rec else 1, frame_bytes(N, R)), np.uint8)
+    out[0] = x0.bits
+    bufs = [tab.arrays["state"], np.empty_like(tab.arrays["state"])]
+    nw = bufs[0].size  # narrow: output words per step
+
+    # ctypes converts arguments under the GIL, so every task's argument tuple is built once; the per-step
+    # scalars are shared objects whose .value is set before each step's tasks are submitted
     L_, U, C = ctypes.c_long, ctypes.c_uint32, ctypes.c_int
+    fixed = [_ptr(tab.arrays[k]) for k in tables.ARRAYS]
+    consts = [_ptr(out), L_(N), L_(nb), L_(Wp), U(tab.k0), U(tab.k1)]
+    t_, rec_, frame0_ = U(0), C(0), L_(0)
 
-    def call(cur, nxt, i0, i1, w0, w1, nsteps, t, rec_, frame0):
-        fn(
-            *fixed,
-            _ptr(cur),
-            _ptr(nxt),
-            _ptr(out),
-            L_(N),
-            L_(nb),
-            L_(Wp),
-            U(tab.k0),
-            U(tab.k1),
-            U(t),
-            L_(i0),
-            L_(i1),
-            L_(w0),
-            L_(w1),
-            C(nsteps),
-            C(rec_),
-            L_(frame0),
-        )
-
-    def ranges(stop, unit, parts):
-        edges = np.unique(np.linspace(0, stop, min(stop, parts) + 1).astype(int)) * unit
-        return list(zip(edges[:-1], edges[1:], strict=True))
+    def calls(parts, nsteps, parity):  # argument tuples of one llna_cpu call per part, reading bufs[parity]
+        a, b = bufs[parity], bufs[1 - parity]
+        return [
+            (*fixed, _ptr(a), _ptr(b), *consts, t_, L_(i0), L_(i1), L_(w0), L_(w1), C(nsteps), rec_, frame0_)
+            for i0, i1, w0, w1 in parts
+        ]
 
     nthreads = _threads(threads)
     groups = Wp // VW
@@ -224,27 +204,25 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
     # earlier, e.g. N=3e4, R=256)
     big = groups >= 2 * nthreads or (graph.indices.size < 800_000 if Wp == 1 else N * Wp < 1 << 21)
     mode = os.environ.get("FAST_LLNA_CPU_MODE") or ("words" if big else "nodes")
-    nw = state.size  # narrow: output words per step
     with ThreadPoolExecutor(nthreads) as pool:
         if mode == "words":  # each task owns a word slice for all steps (narrow: one task)
             if narrow:
                 parts = [(0, nw, 0, 1)]
             else:
-                parts = [(0, N, w0, w1) for w0, w1 in ranges(groups, VW, 4 * nthreads)]
-            list(pool.map(lambda a: call(*a), [(*bufs, *p, steps, t0, rec, 1) for p in parts]))
-            final = bufs[steps % 2]
+                parts = [(0, N, w0, w1) for w0, w1 in _ranges(groups, VW, 4 * nthreads)]
+            t_.value, rec_.value, frame0_.value = t0, rec, 1
+            list(pool.map(lambda a: fn(*a), calls(parts, steps, 0)))
         else:  # every step split over node ranges (narrow: word ranges aligned to 128-byte lines)
             if narrow:
-                parts = [(i0, min(i1, nw), 0, 1) for i0, i1 in ranges(-(-nw // 32), 32, 4 * nthreads)]
+                parts = [(i0, min(i1, nw), 0, 1) for i0, i1 in _ranges(-(-nw // 32), 32, 4 * nthreads)]
             else:
-                parts = [(i0, i1, 0, Wp) for i0, i1 in ranges(N, 1, 4 * nthreads)]
+                parts = [(i0, i1, 0, Wp) for i0, i1 in _ranges(N, 1, 4 * nthreads)]
+            step = [calls(parts, 1, 0), calls(parts, 1, 1)]
             for s in range(steps):
-                rec_ = 1 if rec and (s + 1) % rec == 0 else 0
-                f = (s + 1) // rec if rec_ else 0
-                list(pool.map(lambda a: call(*a), [(*bufs, *p, 1, t0 + s, rec_, f) for p in parts]))
-                bufs.reverse()
-            final = bufs[0]
+                t_.value = t0 + s
+                rec_.value = bool(rec) and (s + 1) % rec == 0
+                frame0_.value = (s + 1) // rec if rec_.value else 0
+                list(pool.map(lambda a: fn(*a), step[s & 1]))
     if record == "final":
-        fin = final.view(np.uint8)
-        out[0] = fin[: out.shape[1]] if narrow else fin.reshape(N, 4 * Wp)[:, :nb]
-    return out if narrow else out.reshape(F, -1)
+        tables.to_frame(bufs[steps % 2].view(np.uint8), N, R, tab.Lk, out[0])
+    return out

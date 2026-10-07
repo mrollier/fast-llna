@@ -25,6 +25,7 @@ fast_llna = ["kernels/*.h"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-ra --strict-markers"
 markers = [
     "cpu: needs a C compiler",
     "metal: needs the MLX Metal backend",
