@@ -67,3 +67,19 @@ def barabasi_albert(n, m, seed=0):
             if c not in targets:
                 targets.append(c)
     return fl.Graph(_undirected(n, np.array(src), np.array(dst)))
+
+
+def chung_lu(n, gamma, mean_degree, seed=0):
+    """Power-law graph (Chung-Lu): endpoints drawn proportionally to weights i^(-1 / (gamma - 1)); undirected,
+    nodes relabelled at random so hubs are not adjacent in memory; isolated nodes get one edge."""
+    rng = np.random.default_rng(seed)
+    w = np.arange(1, n + 1) ** (-1 / (gamma - 1))
+    p = w / w.sum()
+    m = int(n * mean_degree / 2)
+    i, j = rng.choice(n, m, p=p), rng.choice(n, m, p=p)
+    keep = i != j
+    i, j = i[keep], j[keep]
+    lonely = np.setdiff1d(np.arange(n), np.r_[i, j])
+    perm = rng.permutation(n)
+    A = _undirected(n, perm[np.r_[i, lonely]], perm[np.r_[j, (lonely + 1) % n]])
+    return fl.Graph(A)

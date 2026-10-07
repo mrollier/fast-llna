@@ -26,6 +26,7 @@ typedef u32 WORD;
 #define ZEROW 0u
 #define LOADW(ptr, off) __ldg((ptr) + (off))
 #define ANYW(x) ((x) != 0u)
+#define LLNA_LANE0(x) (x)
 #define RANDW(k0, k1, t, i, st, w, d) llna_rand(k0, k1, t, (u32)(i), (st)[w], d)
 #define LLNA_SHFL_XOR(x, m) __shfl_xor_sync(0xffffffffu, (x), (m))
 """
@@ -117,8 +118,8 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
     on_device = rec and frames.nbytes < 0.5 * cp.cuda.Device().mem_info[0]
     dframes = cp.empty(frames.shape, np.uint8) if on_device else None
 
-    def frame(a):
-        return tables.to_frame(a.view(np.uint8), N, R, L * Wp)
+    def frame(a, out):
+        tables.to_frame(a.view(np.uint8), N, R, L * Wp, out)
 
     for s in range(steps):
         args = (
@@ -135,11 +136,11 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
         cur, nxt = nxt, cur
         if rec and (s + 1) % rec == 0:
             if on_device:
-                dframes[(s + 1) // rec] = frame(cur)
+                frame(cur, dframes[(s + 1) // rec])
             else:
-                frames[(s + 1) // rec] = cp.asnumpy(frame(cur))
+                frame(cp.asnumpy(cur), frames[(s + 1) // rec])
     if on_device:
         frames[1:] = cp.asnumpy(dframes[1:])
     if record == "final":
-        frames[0] = cp.asnumpy(frame(cur))
+        frame(cp.asnumpy(cur), frames[0])
     return frames

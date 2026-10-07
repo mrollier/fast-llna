@@ -46,11 +46,12 @@ delta = traj.hamming(pairs)                      # [T+1, 128]
 - `record`: `n` records every n-th step; `"final"` records only the last state.
 - `clamp`: `(mask, value)` pins nodes, per replica or for all replicas.
 - `t0`: continues a run.
+- `noise_period`: replicas r and r + p share their random draws (defect twins under stochastic rules); p divides 32 or is a multiple of 32.
 - Directed graphs: row i of the adjacency matrix lists the nodes that node i reads.
 
 **Output**
 
-Results are packed bits: `traj.states.bits[t, node, byte]`, with replica r stored in bit r % 8 of byte r // 8. `traj.states.to_bool()` unpacks them.
+Each recorded configuration is a flat little-endian bit array `traj.states.bits[t]`, in which replica r of node i is bit `i·L + r`. L is the number of bits per node: the next power of two for R ≤ 8 (1, 2, 4 or 8), and whole bytes, 8·⌈R/8⌉, beyond. One replica of N = 1e7 nodes therefore takes 1.25 MB per frame. `traj.states.to_bool()` unpacks to `[T, R, N]`.
 
 ## Performance (Apple M4, 10 CPU cores, 10-core GPU)
 
@@ -59,7 +60,8 @@ Results are packed bits: `traj.states.bits[t, node, byte]`, with replica r store
 | 528 rules × 60 inits, N=900, T=100, all steps recorded | 35 s | 0.17 s | 0.09 s |
 | same, final state only | – | 0.08 s | 0.05 s |
 | ER N=1e5, R=1024, T=100 | – | 0.36 s | 0.21 s |
-| ER N=1e7, R=1, T=1000, every 10th step recorded | – | – | 57 s |
+| ER N=1e7, R=1, T=1000, every 10th step recorded (126 MB) | – | 24.9 s | 8.7 s |
+| N=1e7, R=1, per step (setup excluded): ER / power-law (γ=2.5) / Moore | – | 24 / 24 / 14 ms | 8.6 / 8.4 / 3.4 ms |
 
 **Throughput** is 2–5·10¹⁰ node-updates/s once there are ≥ 32 replicas per node.
 
@@ -68,8 +70,10 @@ Results are packed bits: `traj.states.bits[t, node, byte]`, with replica r store
 - Neighbours are counted with bit-sliced adders.
 - Rules are applied through exact integer density thresholds per degree, with no floats.
 - Every replica can carry a different rule at no extra cost.
+- With R ≤ 32 a node holds only L = pow2ceil(R) bits, so huge graphs with few replicas run from cache.
+- On GPUs a SIMD group counts each hub's edges together, so a hub does not stall one thread.
 
-**Huge single networks with few replicas are memory-bound.** At N=1e7, random neighbour reads saturate the M4's DRAM. The NVIDIA numbers will come from `benchmarks/workstation_job.sh`.
+**Huge single networks with few replicas** now run from cache: at N=1e7 and R=1, the state is a 1.25 MB node bitset. On Metal a step then costs about as much as streaming the graph's index arrays once (≈3 ms at the M4's bandwidth for the lattice). Each call also pays a one-off setup of 50–120 ms for tables and device copies. The v1 layout needed 60 ms (ER) and 295 ms (power-law) per step on Metal. The NVIDIA numbers will come from `benchmarks/workstation_job.sh`.
 
 ## Layout
 

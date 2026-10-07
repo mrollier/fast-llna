@@ -24,6 +24,7 @@ typedef u32 WORD;
 #define ZEROW 0u
 #define LOADW(ptr, off) ((ptr)[off])
 #define ANYW(x) ((x) != 0u)
+#define LLNA_LANE0(x) (x)
 #define RANDW(k0, k1, t, i, st, w, d) llna_rand(k0, k1, t, (u32)(i), (st)[w], d)
 #define LLNA_SHFL_XOR(x, m) simd_shuffle_xor((x), (ushort)(m))
 """
@@ -123,13 +124,13 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
     frames[0] = x0.bits
     pending = []  # (frame index, lazy mx array)
 
-    def frame(a):
-        return tables.to_frame(np.asarray(a).view(np.uint8), N, R, L * Wp)
+    def frame(a, f):
+        tables.to_frame(np.asarray(a).view(np.uint8), N, R, L * Wp, frames[f])
 
     def flush():
         mx.eval(cur, *(a for _, a in pending))
         for f, a in pending:
-            frames[f] = frame(a)
+            frame(a, f)
         pending.clear()
 
     cur = mx.array(_pad(state))
@@ -149,5 +150,5 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
             flush()
     flush()
     if record == "final":
-        frames[0] = frame(cur)
+        frame(cur, 0)
     return frames

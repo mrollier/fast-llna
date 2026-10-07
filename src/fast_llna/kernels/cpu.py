@@ -34,6 +34,7 @@ typedef u32 WORD __attribute__((vector_size(4 * VW), aligned(4)));
 #define ZEROW ((WORD){0})
 #define LOADW(ptr, off) (*(const WORD *)((ptr) + (off)))
 #define ANYW(x) llna_any(x)
+#define LLNA_LANE0(x) ((x)[0])
 #define RANDW(k0, k1, t, i, st, w, d) llna_randw(k0, k1, t, i, st, w, d)
 static inline int llna_any(WORD x);
 static inline WORD llna_randw(u32 k0, u32 k1, u32 t, int i, const u32 *st, llna_idx w, int d);
@@ -218,8 +219,10 @@ def run(graph, rules, x0, steps, record, clamp, seed, t0, noise_period, threads=
 
     nthreads = _threads(threads)
     groups = Wp // VW
-    # nodes mode pays ~0.3 ms of thread synchronisation per step: worth it only for big steps (M4-measured)
-    big = groups >= 2 * nthreads or N * Wp < 1 << 21
+    # nodes mode pays ~0.3 ms of thread synchronisation per step: worth it only for big steps (M4-measured:
+    # from ~8e5 edges with one word per node; the multi-word bound is the v1 estimate, nodes mode can win
+    # earlier, e.g. N=3e4, R=256)
+    big = groups >= 2 * nthreads or (graph.indices.size < 800_000 if Wp == 1 else N * Wp < 1 << 21)
     mode = os.environ.get("FAST_LLNA_CPU_MODE") or ("words" if big else "nodes")
     nw = state.size  # narrow: output words per step
     with ThreadPoolExecutor(nthreads) as pool:

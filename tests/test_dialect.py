@@ -18,6 +18,7 @@ typedef u32 WORD;
 #define ZEROW 0u
 #define LOADW(ptr, off) ((ptr)[off])
 #define ANYW(x) ((x) != 0u)
+#define LLNA_LANE0(x) (x)
 #define RANDW(k0, k1, t, i, st, w, d) llna_rand(k0, k1, t, (u32)(i), (st)[w], d)
 #define PMAX 8
 #define SEGMAX 16
@@ -36,6 +37,7 @@ typedef u32 WORD;
         "#define LLNA_L 1\n#define LLNA_LMASK 0x1u\n#define LLNA_COOP 0\n",
         "#define LLNA_L 32\n#define LLNA_LMASK 0xffffffffu\n#define LLNA_COOP 0\n",
         "#define LLNA_L 4\n#define LLNA_LMASK 0xfu\n#define LLNA_COOP 1\n#define LLNA_SHFL_XOR(x, m) (x)\n",
+        "#define LLNA_L 1\n#define LLNA_LMASK 0x1u\n#define LLNA_COOP 1\n#define LLNA_SHFL_XOR(x, m) (x)\n",
     ],
 )
 def test_header_parses_as_cpp14(tmp_path, lanes):
@@ -62,7 +64,7 @@ static inline int __ffs(unsigned x) { return __builtin_ffs((int)x); }
 
 
 @pytest.mark.skipif(shutil.which("c++") is None, reason="no C++ compiler")
-@pytest.mark.parametrize("R", [3, 257])
+@pytest.mark.parametrize("R", [1, 3, 257])
 def test_generated_cuda_source_parses(tmp_path, R):
     """The CUDA host cannot run here; at least its full generated source (stochastic + clamp) must parse,
     with stand-ins for the CUDA builtins."""

@@ -5,6 +5,7 @@
  *   types     u32 (32-bit unsigned), llna_idx (64-bit signed), WORD (one or more u32 lanes of 32 replicas)
  *   macros    LLNA_FN (function qualifier), LLNA_PTR(T) (pointer to read-only buffer), MULHI(a, b),
  *             ZEROW (all-zero WORD), LOADW(ptr, off) (WORD at u32 offset off), ANYW(x) (any bit set),
+ *             LLNA_LANE0(x) (lane 0 of a WORD as u32),
  *             RANDW(k0, k1, t, i, stream, w, d) (random digit word d for the lanes of WORD w)
  *   defines   PMAX (count bit planes, >= bitlen(max degree)), SEGMAX (>= max segments per degree),
  *             NCELL (partition cells), LLNA_D (random digits, 0 = deterministic), LLNA_CLAMP (0/1),
@@ -77,13 +78,33 @@ LLNA_FN u32 llna_rand(u32 k0, u32 k1, u32 t, u32 i, u32 sw, int d) {
         }                                                                                              \
     }
 
+#if LLNA_L == 1 /* one replica: acc = the TBL row of the single segment bs the count falls in */
+#define LLNA_PICK(acc, TBL, OFF)                                                                       \
+    acc = LLNA_SEL(s, LOADW(TBL, OFF(1, seg_cell[2 * bs + 1]) + w), LOADW(TBL, OFF(0, seg_cell[2 * bs]) + w));
+#else
+#define LLNA_PICK(acc, TBL, OFF) LLNA_SELECT(acc, TBL, OFF)
+#endif
+
 LLNA_FN WORD llna_update(LLNA_PTR(u32) S, LLNA_PTR(int) indptr, LLNA_PTR(int) indices,
                          LLNA_PTR(int) seg_off, LLNA_PTR(int) seg_thr, LLNA_PTR(int) seg_cell,
                          LLNA_PTR(u32) ONE, LLNA_PTR(u32) HASF, LLNA_PTR(u32) FRAC, LLNA_PTR(u32) STREAM,
                          LLNA_PTR(u32) CM, LLNA_PTR(u32) CV, llna_idx Wp, u32 k0, u32 k1, u32 t, int i,
                          llna_idx w, int lane, int coop) {
-    /* bit-sliced count of living in-neighbours e = lane, lane + coop, ...: c[p] holds bit p of the count */
-    int lo = indptr[i], k = indptr[i + 1] - lo, lim = 0, m = 0;
+    /* count of living in-neighbours e = lane, lane + coop, ... (coop lanes share node i, then sum) */
+    int lo = indptr[i], k = indptr[i + 1] - lo, b0 = seg_off[k], nseg = seg_off[k + 1] - b0;
+#if LLNA_L == 1 /* one replica: an integer count and threshold scan are cheaper than bit planes */
+    int q = 0;
+    for (int e = lane; e < k; e += coop) q += (int)LLNA_LANE0(LLNA_GET(S, indices[lo + e]));
+#if LLNA_COOP
+    for (int sh = 1; sh < coop; sh <<= 1) q += LLNA_SHFL_XOR(q, sh);
+#endif
+    int bs = 0; /* the count's segment: the last one whose first q is <= q */
+    while (bs + 1 < nseg && seg_thr[b0 + bs + 1] <= q) bs++;
+    bs += b0;
+    WORD s = LLNA_GET(S, i);
+#else
+    /* bit-sliced: c[p] holds bit p of the count, per lane */
+    int lim = 0, m = 0;
     WORD c[PMAX];
     for (int p = 0; p < PMAX; p++) c[p] = ZEROW;
     for (int e = lane; e < k; e += coop) {
@@ -116,7 +137,6 @@ LLNA_FN WORD llna_update(LLNA_PTR(u32) S, LLNA_PTR(int) indptr, LLNA_PTR(int) in
     WORD s = LLNA_GET(S, i);
 
     /* g[b]: lanes whose count reaches the first q of segment b (thresholds < 2^lim) */
-    int b0 = seg_off[k], nseg = seg_off[k + 1] - b0;
     WORD g[SEGMAX];
     for (int b = 1; b < SEGMAX; b++) {
         if (b >= nseg) break;
@@ -128,18 +148,19 @@ LLNA_FN WORD llna_update(LLNA_PTR(u32) S, LLNA_PTR(int) indptr, LLNA_PTR(int) in
         }
         g[b] = ge;
     }
+#endif
 
     WORD out;
-    LLNA_SELECT(out, ONE, LLNA_OFF1)
+    LLNA_PICK(out, ONE, LLNA_OFF1)
 #if LLNA_D > 0
     /* lanes with 0 < p < 1: alive iff U < p, comparing binary digits most significant first */
     WORD eq;
-    LLNA_SELECT(eq, HASF, LLNA_OFF1)
+    LLNA_PICK(eq, HASF, LLNA_OFF1)
     if (ANYW(eq)) {
         WORD lt = ZEROW;
         for (int d = 0; d < LLNA_D; d++) {
             WORD pd;
-            LLNA_SELECT(pd, FRAC, LLNA_OFFD)
+            LLNA_PICK(pd, FRAC, LLNA_OFFD)
             WORD u = RANDW(k0, k1, t, i, STREAM, w, d);
 #if LLNA_NP < 32 /* noise period p divides 32: lane r reads digit lane r % p */
             u = (u & ((1u << LLNA_NP) - 1u)) * LLNA_REPL;

@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from graphs import barabasi_albert, erdos_renyi, rewired_torus  # noqa: E402
+from graphs import barabasi_albert, chung_lu, erdos_renyi, rewired_torus  # noqa: E402
 
 import fast_llna as fl  # noqa: E402
 
@@ -94,6 +94,21 @@ def huge_N(backend):
             )
 
 
+def _random(n, R, seed):
+    return fl.States.from_bool(np.random.default_rng(seed).random((R, n)) < 0.5)  # fast for huge N
+
+
+def small_R(backend):
+    """Few replicas, N up to 1e7: the narrow layout (L = pow2ceil(R) bits per node) and cooperative hubs."""
+    for N in (1_000, 100_000, 1_000_000, 10_000_000):
+        g = erdos_renyi(N, 8, seed=N)
+        steps, repeats = (20, 1) if N >= 1_000_000 else (100, 3)
+        for R in (1, 2, 4, 8, 16, 32):
+            measure("small_R", g, fl.life_like(5, 6, 28), _random(N, R, R), steps, backend, repeats, record="final")
+    for name, g in (("power_law", chung_lu(10_000_000, 2.5, 8, seed=0)), ("moore", fl.moore_torus(3163, 3163))):
+        measure(f"small_R_{name}", g, fl.life_like(5, 6, 28), _random(g.n, 1, 1), 20, backend, 1, record="final")
+
+
 def hubs(backend):
     for name, g in (("ER", erdos_renyi(10_000, 8, seed=2)), ("BA", barabasi_albert(10_000, 4, seed=2))):
         measure(
@@ -128,7 +143,7 @@ def reducers(backend):
         print(json.dumps({"scenario": f"reducer_{what}", "seconds": round(time.perf_counter() - t, 4)}))
 
 
-SCENARIOS = {f.__name__: f for f in (thesis, scale_R, scale_N, huge_N, hubs, overheads, reducers)}
+SCENARIOS = {f.__name__: f for f in (thesis, scale_R, scale_N, huge_N, small_R, hubs, overheads, reducers)}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from ..rng import noise_streams, quantize, split_seed
-from ..states import bits_per_node, frame_bytes, pack
+from ..states import bits_per_node, pack
 
 HEADER = (Path(__file__).parent / "llna.h").read_text()
 PMAX_BUCKETS = (4, 8, 12, 16, 24, 32)
@@ -49,15 +49,16 @@ def to_kernel(x0, Lk: int) -> np.ndarray:
     return _words(b, -(-N * Lk // 32))
 
 
-def to_frame(state, n: int, R: int, Lk: int):
-    """Kernel state bytes (Lk bits per node, trailing padding allowed) -> one frame in the States layout.
-    Works on numpy and cupy arrays."""
+def to_frame(state, n: int, R: int, Lk: int, out) -> None:
+    """Write kernel state bytes (Lk bits per node, trailing padding allowed) into ``out``, one contiguous frame
+    in the States layout, without temporaries. Works on numpy and cupy arrays."""
     Ls = bits_per_node(R)
     if Ls == Lk:
-        return state[: frame_bytes(n, R)]
-    if Ls % 8 == 0 and Lk % 8 == 0:
-        return state[: n * Lk // 8].reshape(n, Lk // 8)[:, : Ls // 8].reshape(-1)
-    raise AssertionError(f"no byte-aligned path from {Lk} to {Ls} bits per node")
+        out[...] = state[: out.size]
+    elif Ls % 8 == 0 and Lk % 8 == 0:
+        out.reshape(n, Ls // 8)[...] = state[: n * Lk // 8].reshape(n, Lk // 8)[:, : Ls // 8]
+    else:
+        raise AssertionError(f"no byte-aligned path from {Lk} to {Ls} bits per node")
 
 
 def lanes(R: int) -> int:

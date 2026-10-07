@@ -39,7 +39,8 @@ The odd-r symmetric path is exact (checked for r ≤ 25, k ≤ 1000).
 
 ## Design decisions
 
-**Single strategy in v1:** replicas as lanes, which also covers R=1 at a constant-factor cost.
+**Strategy:** replicas as lanes. Since 2026-10-07, R ≤ 32 uses narrow node-major lanes (L = pow2ceil(R) bits per node)
+and GPU-cooperative hubs; see `docs/superpowers/specs/2026-10-07-narrow-lanes-design.md`.
 
 **One C-subset kernel core, three thin hosts.** `kernels/llna.h` contains only pure value functions:
 - bounded ripple add;
@@ -100,7 +101,8 @@ next = 1 iff U_r < p_r ;  p rounded to 2^-32 ; p == 1 via its own ONE mask ; war
 - `t0` lets a run continue: 2×50 steps equals 1×100 steps.
 - Checked against the Random123 known-answer vectors, e.g. ctr=0, key=0 gives `6627e8d5 e169c58d bc57ac4c 9b00dbd8`.
 
-**Canonical public format.**
+**Canonical public format.** Superseded by the flat node-major layout of the narrow-lanes spec (frames of
+ceil(N·L/8) bytes).
 - Packed states are uint8 `[..., N, ceil(R/8)]` (`packbits` over replicas, little bit order, padding bits 0).
 - On little-endian machines this is the same memory as the u32 or vector word layout, so no conversion is needed. Import asserts little-endian.
 - Known limit: R=1 wastes 7/8 of each byte. N=1e7 × T=1000 recorded every step is 10 GB, so use `record=n` stride or "final".
