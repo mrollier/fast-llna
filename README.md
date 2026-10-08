@@ -19,6 +19,8 @@ pip install -e ".[cuda,dev]"    # NVIDIA (cupy-cuda12x)
 - [notebooks/consensus_r8.ipynb](notebooks/consensus_r8.ipynb): the same for r = 8 in both even-r conventions.
 - [notebooks/consensus_sweep.ipynb](notebooks/consensus_sweep.ipynb): resolutions r = 5..10 over Watts–Strogatz rewiring p from 0 to 1, with winners validated on fresh networks. Data from `python notebooks/consensus_sweep.py` (resumable, takes hours; results in `notebooks/results/`, not in git).
 
+The notebooks are generated from `notebooks/build/build_*.py`; `bash notebooks/build/build_all.sh [r9 r8 sweep]` regenerates and executes them.
+
 The CPU backend compiles its kernel at first use with the system C compiler (`cc`, or `$CC`) and caches it in `~/.cache/fast_llna` (`$XDG_CACHE_HOME/fast_llna`, or `$FAST_LLNA_CACHE`).
 
 ## Quick start
