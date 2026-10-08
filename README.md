@@ -60,7 +60,7 @@ c.t_consensus, c.state, c.t_cycle, c.period           # [networks, rules]; inf /
 
 **Consensus and cycles**
 
-`fl.consensus(graph, rules, init, t_max, offsets=...)` reports, per network (segment of a disjoint union) and rule, the first consensus time and state. For deterministic runs without consensus it reports the time a repeat was proven and its exact period. Detection is Brent-style, with references at every power of two: a cycle is found if some 2^j ≥ transient and ≥ period has 2^j + period ≤ `t_max`.
+`fl.consensus(graph, rules, init, t_max, offsets=...)` reports, per network (segment of a disjoint union) and rule, the first consensus time and state. For deterministic runs without consensus it reports the time a repeat was detected (the cycle was entered by `t_cycle - period`) and its exact period. Detection is Brent-style, with references at every power of two: a cycle is found if some 2^j ≥ transient and ≥ period has 2^j + period ≤ `t_max`.
 
 **Options**
 - `record`: `n` records every n-th step (`steps` must be a multiple of n); `"final"` records only the last state.

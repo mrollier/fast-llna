@@ -25,8 +25,9 @@ class Consensus:
     state
         The agreed state (0 or 1) at that timestep; -1 if none.
     t_cycle, period
-        Deterministic lanes without consensus only: the timestep at which the segment's configuration
-        repeated, and the exact minimal period of that cycle; inf and 0 otherwise. A cycle proves the segment
+        Deterministic lanes without consensus only: the timestep at which a repeat was detected
+        (t_ref + period, see :func:`consensus`; the cycle was entered by ``t_cycle - period``), and the exact
+        minimal period of that cycle; inf and 0 otherwise. A cycle proves the segment
         never reaches consensus.
     """
 
@@ -107,12 +108,14 @@ def consensus(
     configuration at t_ref = 0, 1, 2, 4, ... is compared with the frames t_ref + 1 .. max(2 t_ref, 1). A cycle
     with transient mu and minimal period lambda is found at t_cycle = t_ref + lambda, t_ref the smallest of
     0, 1, 2, 4, ... with t_ref >= mu and lambda <= max(t_ref, 1), whatever the chunk or the lanes. It is found
-    only if that t_cycle <= t_max: at t_max = 1e5 a cycle entered after t = 65536 can go unseen.
+    only if that t_cycle <= t_max: at t_max = 1e5 a cycle entered after t = 65536 can go unseen, and so can
+    one with period in (34464, 65536], whatever its transient (2^j >= period forces 2^j = 65536).
     """
     N = graph.n
     off = np.array([0, N]) if offsets is None else np.asarray(offsets)
     if off.ndim != 1 or off.dtype.kind not in "iu" or off.size < 2 or off[0] != 0 or off[-1] != N:
         raise ValueError(f"offsets must be 1-D ints from 0 to N = {N}, got {offsets}")
+    off = off.astype(np.intp)
     if np.any(np.diff(off) <= 0):
         raise ValueError(f"offsets must be strictly increasing, got {offsets}")
     S, starts = off.size - 1, off[:-1]
@@ -131,7 +134,10 @@ def consensus(
         raise ValueError(f"init must be [R, {N}] or [{N}], got shape {x0.shape}")
     R = len(x0)
     if len(rules) not in (1, R):
-        raise ValueError(f"need 1 or {R} rules (one per lane), got {len(rules)}")
+        raise ValueError(
+            f"init of shape {x0.shape} is [R, N] and needs 1 or R = {R} rules, got {len(rules)}; "
+            "an init of shape [N] is broadcast to all rules"
+        )
 
     # behaviour on the reachable cells: deterministic, and quiet (both uniform states are fixed points)
     ks = np.unique(graph.degree)

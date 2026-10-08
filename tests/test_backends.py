@@ -228,6 +228,8 @@ def test_init_must_be_one_configuration_per_replica():
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_merged_exact_partitions_match_reference(backend):
+    # each backend's merged call vs the reference's merged call (merged vs separate is bit-identical only for
+    # deterministic lanes: stochastic lanes draw by lane position)
     graph = random_digraph(60, 1, 12, 31)
     degrees = np.unique(graph.degree)
     parts = [mixed(5, 3, 31), mixed(8, 4, 32, fl.symmetric(8, "-+")), fl.majority(0.5)]

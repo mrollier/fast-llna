@@ -214,7 +214,16 @@ def test_one_chunk_alive_at_a_time(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "offsets", [[1, 5, 12, 21], [0, 5, 12, 20], [0, 7, 5, 21], [0, 5, 5, 12, 21], [0.0, 21.0], [[0, 21]]]
+    "offsets",
+    [
+        [1, 5, 12, 21],
+        [0, 5, 12, 20],
+        [0, 7, 5, 21],
+        [0, 5, 5, 12, 21],
+        [0.0, 21.0],
+        [[0, 21]],
+        np.array([0, 7, 5, 21], np.uint64),
+    ],
 )
 def test_bad_offsets(offsets):
     with pytest.raises(ValueError, match="offsets"):
