@@ -3,8 +3,9 @@ at rho = 1/2) on Watts-Strogatz networks (N = 1000, K = 8), rewiring p = 0 and 2
 
     python notebooks/consensus_sweep.py [--smoke] [--stage discovery|select|validation|all] [--p I ...]
 
-Stages (``all`` runs the three in order; existing files are skipped, so a rerun resumes after an interruption;
-keep the Mac awake with ``caffeinate -i``):
+Stages (``all`` runs the three in order; existing files are skipped, so a rerun resumes after an interruption,
+but a file whose stored config differs from the constants stops the run; keep the Mac awake with
+``caffeinate -i``):
 
 discovery
     Per p: dedupe all codes into behaviours (equal exact tables on the degrees of the discovery AND
@@ -143,9 +144,24 @@ def outcome(c):
     return f"consensus {n_con}, cycle {n_cyc}, open {c.t_consensus.size - n_con - n_cyc}"
 
 
-def config(seeds, seed_init, seed_majority):
-    return dict(N=N, K=K, T_MAX=T_MAX, net_seeds=np.asarray(seeds), seed_init=seed_init,
-                seed_rules=SEED_RULES, seed_majority=seed_majority)
+def settings(prefix, i):
+    """The config a {prefix}_pII.npz file stores, from the current constants."""
+    if prefix == "disc":
+        seeds, init, maj, sizes = range(S), SEED_INIT, SEED_MAJ, dict(S=S, V=V)
+    else:
+        seeds, init, maj = range(VALID_SEED0, VALID_SEED0 + V), SEED_INIT_VALID, SEED_MAJ_VALID
+        sizes = dict(V=V)
+    return dict(p=P[i], i=i, N=N, K=K, T_MAX=T_MAX, **sizes, net_seeds=np.asarray(seeds), seed_init=init,
+                seed_rules=SEED_RULES, seed_majority=maj)
+
+
+def check(prefix, i):
+    """Exit unless the existing {prefix}_pII.npz was computed with the current config: resume never mixes."""
+    path = OUT / f"{prefix}_p{i:02d}.npz"
+    with np.load(path) as d:
+        bad = [k for k, v in settings(prefix, i).items() if k not in d.files or not np.array_equal(d[k], v)]
+    if bad:
+        sys.exit(f"{path} was computed with other {', '.join(bad)}: delete it or restore the config")
 
 
 def majority(graph, offsets, x0, seed):
@@ -181,9 +197,9 @@ def discovery(i):
             res[key][:, g] = getattr(c, key)
         log(f"  r={r:2d} {CONV[conv]}: {len(g):4d} lanes {walls[-1][3]:7.1f} s  {outcome(c)}")
     group_r, group_conv, group_lanes, group_wall = (np.array(x) for x in zip(*walls, strict=True))
-    return dict(p=p, i=i, S=S, V=V, **config(range(S), SEED_INIT, SEED_MAJ), codes=codes, behaviour=behaviour,
-                rep=rep, degrees=degrees, **res, **majority(graph, offsets, x0, SEED_MAJ), group_r=group_r,
-                group_conv=group_conv, group_lanes=group_lanes, group_wall=group_wall)
+    return dict(**settings("disc", i), codes=codes, behaviour=behaviour, rep=rep, degrees=degrees, **res,
+                **majority(graph, offsets, x0, SEED_MAJ), group_r=group_r, group_conv=group_conv,
+                group_lanes=group_lanes, group_wall=group_wall)
 
 
 def select(path):
@@ -230,8 +246,8 @@ def validation(i, codes):
     c = fl.consensus(graph, rules, x0, T_MAX, offsets=offsets, seed=SEED_RULES)
     wall = time.perf_counter() - start
     log(f"  merged: {len(codes):4d} lanes {wall:7.1f} s  {outcome(c)}")
-    return dict(p=p, i=i, V=V, **config(range(VALID_SEED0, VALID_SEED0 + V), SEED_INIT_VALID, SEED_MAJ_VALID),
-                codes=codes, degrees=degrees, **{key: getattr(c, key) for key in RESULTS},
+    results = {key: getattr(c, key) for key in RESULTS}
+    return dict(**settings("valid", i), codes=codes, degrees=degrees, **results,
                 **majority(graph, offsets, x0, SEED_MAJ_VALID), wall=wall)
 
 
@@ -248,6 +264,8 @@ def save(path, **arrays):
 def stage(prefix, compute, indices):
     """compute(i) and save it for every p index whose file is missing; log progress and an ETA."""
     todo = [i for i in indices if not (OUT / f"{prefix}_p{i:02d}.npz").exists()]
+    for i in set(indices) - set(todo):
+        check(prefix, i)
     log(f"{prefix}: {len(indices) - len(todo)} of {len(indices)} files exist, computing {todo}")
     start = time.perf_counter()
     for n, i in enumerate(todo, 1):
@@ -275,6 +293,8 @@ if __name__ == "__main__":
     if args.stage in ("select", "all"):
         path = OUT / "validation_set.npz"
         missing = [i for i in range(len(P)) if not (OUT / f"disc_p{i:02d}.npz").exists()]
+        for i in set(range(len(P))) - set(missing):  # also guards the files select() reads
+            check("disc", i)
         if path.exists():
             log(f"select: {path.name} exists, kept")
         elif missing:
