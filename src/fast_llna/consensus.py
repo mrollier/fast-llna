@@ -167,7 +167,7 @@ def consensus(
         x, cur = States(last, Rp, N), Rules(rules.partition, p)
         traj = simulate(graph, cur, x, n, t0=t, seed=seed, backend=backend, threads=threads)
         frames = traj.states.bits[1:]  # timesteps t + 1 .. t + n
-        last = frames[-1].copy()  # not a view: the trajectory is freed
+        last = frames[-1].copy()  # not a view, so the trajectory can be freed below
         # quiet lanes keep a consensus: then only a chunk that ends in a new one is scanned
         if not quiet[lane].all() or (agree(last[None])[0][0] & unsettled()[:, lane]).any():
             settle(frames, t + 1)
@@ -178,6 +178,7 @@ def consensus(
             s, j = np.nonzero(same.any(0) & hunt)
             f = same.argmax(0)[s, j] + 1
             t_cyc[s, lane[j]], period[s, lane[j]] = t + f, t + f - t_ref
+        del traj, frames  # free this chunk before the next simulate call: peak memory is one chunk
 
         t += n
         if t & (t - 1) == 0:

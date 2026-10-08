@@ -1,6 +1,7 @@
 """fl.consensus against a brute-force walk over directly simulated frames."""
 
 import importlib
+import weakref
 
 import numpy as np
 import pytest
@@ -195,6 +196,21 @@ def test_compaction(monkeypatch):
     check(got, oracle(graph, offsets, rules, x0, 100, np.ones(65, bool)))
     assert got.t_cycle[0, long].tolist() == [29] * 7
     assert calls[0] == 128 and calls[-1] == 8
+
+
+def test_one_chunk_alive_at_a_time(monkeypatch):
+    """The previous chunk's trajectory is freed before the next simulate call: peak memory is one chunk."""
+    refs, alive, simulate = [], [], fl.simulate
+
+    def recording(*args, **kw):
+        alive.append(sum(r() is not None for r in refs))
+        traj = simulate(*args, **kw)
+        refs.append(weakref.ref(traj.states.bits))
+        return traj
+
+    monkeypatch.setattr(importlib.import_module("fast_llna.consensus"), "simulate", recording)
+    fl.consensus(GRAPH, mixed(9, 9), init(9, GRAPH.n, 9), 100, offsets=OFFSETS, chunk=8, backend="reference")
+    assert len(alive) > 3 and alive == [0] * len(alive)
 
 
 @pytest.mark.parametrize(
