@@ -14,6 +14,8 @@ pip install -e ".[metal,dev]"   # Apple Silicon
 pip install -e ".[cuda,dev]"    # NVIDIA (cupy-cuda12x)
 ```
 
+Example notebook: [notebooks/consensus_r9.ipynb](notebooks/consensus_r9.ipynb) shows how fast the 512 self-symmetric r = 9 rules and Watts' majority rule reach consensus on small-world networks. It needs `pip install -e ".[notebook]"`.
+
 The CPU backend compiles its kernel at first use with the system C compiler (`cc`, or `$CC`) and caches it in `~/.cache/fast_llna` (`$XDG_CACHE_HOME/fast_llna`, or `$FAST_LLNA_CACHE`).
 
 ## Quick start
