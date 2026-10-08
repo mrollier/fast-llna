@@ -14,7 +14,10 @@ pip install -e ".[metal,dev]"   # Apple Silicon
 pip install -e ".[cuda,dev]"    # NVIDIA (cupy-cuda12x)
 ```
 
-Example notebook: [notebooks/consensus_r9.ipynb](notebooks/consensus_r9.ipynb) shows how fast the 512 self-symmetric r = 9 rules and Watts' majority rule reach consensus on small-world networks. It needs `pip install -e ".[notebook]"`.
+**Notebooks** (need `pip install -e ".[notebook]"`)
+- [notebooks/consensus_r9.ipynb](notebooks/consensus_r9.ipynb): the 256 quiescent self-symmetric r = 9 rules (of 512 self-symmetric) vs Watts' majority on small-world networks (WS N = 1000, k = 8, p = 0.05): time to consensus, provable cycles.
+- [notebooks/consensus_r8.ipynb](notebooks/consensus_r8.ipynb): the same for r = 8 in both even-r conventions.
+- [notebooks/consensus_sweep.ipynb](notebooks/consensus_sweep.ipynb): resolutions r = 5..10 over Watts–Strogatz rewiring p from 0 to 1, with winners validated on fresh networks. Data from `python notebooks/consensus_sweep.py` (resumable, takes hours; results in `notebooks/results/`, not in git).
 
 The CPU backend compiles its kernel at first use with the system C compiler (`cc`, or `$CC`) and caches it in `~/.cache/fast_llna` (`$XDG_CACHE_HOME/fast_llna`, or `$FAST_LLNA_CACHE`).
 
@@ -33,6 +36,15 @@ rho = traj.density()                             # [T+1, R]
 x, pairs = fl.defect_twins(fl.random_states(g.n, 128, seed=1), flips=1, seed=2)
 traj = fl.simulate(g, fl.majority(), x, 100, seed=3, noise_period=128)  # twins share their coin flips
 delta = traj.hamming(pairs)                      # [T+1, 128]
+
+nets = [fl.ring(1000, 4) for _ in range(10)]          # any graphs; one run per network and rule
+g, offsets = fl.union(*nets)
+codes = fl.self_equivalent(9)                         # (beta, sigma) of all self-symmetric r=9 rules
+codes = codes[codes[:, 0] % 2 == 0]                   # keep rho = 0 at rho = 0
+rules = fl.life_like(9, *codes.T)
+x0 = fl.random_states(1000, 10, seed=0).to_bool().ravel()   # one start per network, shared by all rules
+c = fl.consensus(g, rules, x0, 10_000, offsets=offsets)
+c.t_consensus, c.state, c.t_cycle, c.period           # [networks, rules]; inf / -1 / inf / 0 if none
 ```
 
 **Specifying rules**
@@ -42,7 +54,13 @@ delta = traj.hamming(pairs)                      # [T+1, 128]
   - `fl.MAJORITY`.
 - Helpers:
   - `fl.equivalent(r, β, σ)` returns the complement-equivalent rule.
+  - `fl.self_equivalent(r)` returns all (β, σ) with `equivalent(r, β, σ) = (β, σ)`; quiescent ones are `codes[codes[:, 0] % 2 == 0]`.
+  - `rules.exact(degrees)` re-expresses rules with one cell per (degree, living neighbours): rules are then equal as functions on a graph iff their tables are, and rules of different partitions can be concatenated into one `simulate` call.
   - Custom stochastic rules are `fl.Rules(partition, p)`, where `p[i, s, j]` is the probability of being alive next.
+
+**Consensus and cycles**
+
+`fl.consensus(graph, rules, init, t_max, offsets=...)` reports, per network (segment of a disjoint union) and rule, the first consensus time and state. For deterministic runs without consensus it reports the time a repeat was proven and its exact period. Detection is Brent-style, with references at every power of two: a cycle is found if some 2^j ≥ transient and ≥ period has 2^j + period ≤ `t_max`.
 
 **Options**
 - `record`: `n` records every n-th step (`steps` must be a multiple of n); `"final"` records only the last state.
@@ -90,11 +108,13 @@ Each recorded configuration is a flat little-endian bit array `traj.states.bits[
 |---|---|
 | `src/fast_llna/rules.py` | Partitions (exact integer cell index), rules, equivalence, enumeration |
 | `src/fast_llna/graph.py` | CSR in-neighbour graphs, ring and Moore torus, disjoint union |
+| `src/fast_llna/consensus.py` | Consensus times and cycle detection per network |
 | `src/fast_llna/states.py` | Packed states, initial-condition helpers, `Trajectory` reducers |
 | `src/fast_llna/reference.py` | Slow numpy reference: the definition the other backends must match |
 | `src/fast_llna/kernels/llna.h` | The single kernel source shared by all three hosts (C / CUDA / Metal subset) |
 | `src/fast_llna/kernels/{cpu,metal,cuda}.py` | Thin hosts: compilation, launch and recording |
 | `benchmarks/` | `bench.py` scenarios, graph generators, `workstation_job.sh` for the NVIDIA machine |
+| `notebooks/` | Example notebooks and the sweep script |
 | `docs/design.md` | Design rationale and plan |
 
 ## Tests
@@ -107,5 +127,6 @@ The test suite checks:
 - every partition against the thesis interval definitions in exact rational arithmetic;
 - a Game of Life glider and ECA rule 150;
 - complementation symmetry, for odd and even r, with the legacy partition as a negative control;
+- consensus times and cycle detection against a brute-force oracle;
 - clamping, continuation and recording;
 - bit-identity of every available backend against the reference.
