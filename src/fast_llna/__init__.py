@@ -9,6 +9,7 @@ from .rules import (
     life_like,
     majority,
     nonequivalent,
+    self_equivalent,
     symmetric,
     uniform,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "life_like",
     "majority",
     "nonequivalent",
+    "self_equivalent",
     "symmetric",
     "uniform",
 ]

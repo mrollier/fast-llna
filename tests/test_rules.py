@@ -157,3 +157,99 @@ def test_equivalent_validates_and_broadcasts_like_life_like():
     b, s = fl.equivalent(5, 3, [1, 2])
     assert b.shape == s.shape == (2,)
     assert (b[0], s[0]) == fl.equivalent(5, 3, 1)
+
+
+@pytest.mark.parametrize("r", range(1, 11))
+def test_self_equivalent_rows_are_fixed_points_sorted_by_beta(r):
+    codes = fl.self_equivalent(r)
+    assert codes.shape == (2**r, 2) and codes.dtype == np.int64
+    assert np.array_equal(codes[:, 0], np.arange(2**r))
+    b, s = fl.equivalent(r, codes[:, 0], codes[:, 1])
+    assert np.array_equal(b, codes[:, 0]) and np.array_equal(s, codes[:, 1])
+
+
+@pytest.mark.parametrize("r", range(1, 5))
+def test_self_equivalent_is_exactly_the_set_of_fixed_points(r):
+    beta, sigma = np.meshgrid(np.arange(2**r), np.arange(2**r), indexing="ij")
+    b, s = fl.equivalent(r, beta, sigma)
+    brute = np.argwhere((b == beta) & (s == sigma))
+    assert np.array_equal(brute, fl.self_equivalent(r))
+
+
+@pytest.mark.parametrize("r", range(1, 11))
+def test_quiescent_self_equivalent_rules_are_half(r):
+    codes = fl.self_equivalent(r)
+    assert len(codes[codes[:, 0] % 2 == 0]) == 2 ** (r - 1)
+
+
+EXACT_DEGREES = (1, 2, 3, 7, 8, 12)
+
+
+def _exact_cases():
+    return [
+        fl.life_like(5, [3, 17, 30], [9, 0, 21]),
+        fl.life_like(6, [3, 17, 60], [9, 0, 21], fl.symmetric(6, "+-")),
+        fl.life_like(6, [3, 17, 60], [9, 0, 21], fl.symmetric(6, "-+")),
+        fl.life_like(5, [3, 17, 30], [9, 0, 21], fl.uniform(5)),
+        fl.majority(0.3),
+    ]
+
+
+@pytest.mark.parametrize("rules", _exact_cases())
+def test_exact_copies_the_behaviour_per_degree_and_count(rules):
+    t = rules.exact(EXACT_DEGREES)
+    assert t.partition == fl.Partition("exact", sum(k + 1 for k in EXACT_DEGREES), degrees=EXACT_DEGREES)
+    assert t.p.shape == (len(rules), 2, t.partition.ncell)
+    off = 0
+    for k in EXACT_DEGREES:
+        for q in range(k + 1):
+            for s in (0, 1):
+                assert np.array_equal(t.p[:, s, off + q], rules.p[:, s, rules.partition.cell(q, k, s)])
+        off += k + 1
+
+
+def test_exact_partition_cells_and_validation():
+    part = fl.Rules.exact(fl.majority(), (2, 5)).partition
+    assert np.array_equal(part.cell([0, 2, 0, 5], [2, 2, 5, 5], 0), [0, 2, 3, 8])
+    with pytest.raises(ValueError):
+        part.cell(1, 3, 0)
+    for bad in ((), (2, 1), (1, 1), (0, 2), (-1,)):
+        with pytest.raises(ValueError):
+            fl.Partition("exact", sum(k + 1 for k in bad), degrees=bad)
+    with pytest.raises(ValueError):
+        fl.Partition("exact", 4, degrees=(2,))
+    with pytest.raises(ValueError):
+        fl.Partition("uniform", 3, degrees=(2,))
+
+
+def _distinct(tables):
+    return len(np.unique(np.concatenate(tables).reshape(sum(len(t) for t in tables), -1), axis=0))
+
+
+def _quiescent(r, even):
+    codes = fl.self_equivalent(r)
+    codes = codes[codes[:, 0] % 2 == 0]
+    return fl.life_like(r, codes[:, 0], codes[:, 1], fl.symmetric(r, even)).exact((8,)).p
+
+
+def test_quiescent_self_equivalent_rules_collapse_on_degree_8():
+    assert _distinct([_quiescent(9, "+-")]) == 256
+    assert _distinct([_quiescent(10, "+-"), _quiescent(10, "-+")]) == 256
+    union = [_quiescent(r, e) for r in range(5, 11) for e in (("+-", "-+") if r % 2 == 0 else ("+-",))]
+    assert _distinct(union) == 256
+
+
+def test_rules_with_equal_tables_give_identical_trajectories():
+    from _graphs import degree_graph
+
+    graph = degree_graph([2, 4, 4, 6, 2, 4, 6, 8, 2, 4] * 3, seed=3)
+    beta, sigma = 0b10011010, 0b01011010  # bits 3 and 4 agree: rho = 1/2 acts alike in both conventions
+    init = fl.random_states(graph.n, 4, seed=1)
+    runs = [
+        fl.simulate(graph, fl.life_like(8, beta, sigma, fl.symmetric(8, e)), init, 6, backend="reference")
+        for e in ("+-", "-+")
+    ]
+    exact = fl.life_like(8, beta, sigma, fl.symmetric(8, "+-")).exact((2, 4, 6, 8))
+    runs.append(fl.simulate(graph, exact, init, 6, backend="reference"))
+    assert np.array_equal(runs[0].states.bits, runs[1].states.bits)
+    assert np.array_equal(runs[0].states.bits, runs[2].states.bits)

@@ -224,3 +224,17 @@ def test_init_must_be_one_configuration_per_replica():
     traj = fl.simulate(g, rule, fl.random_states(40, 2, seed=0), 3, backend="reference")
     with pytest.raises(ValueError, match="final"):
         fl.simulate(g, rule, traj.states, 2, backend="reference")  # [T, ...] frames instead of traj.final()
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_merged_exact_partitions_match_reference(backend):
+    graph = random_digraph(60, 1, 12, 31)
+    degrees = np.unique(graph.degree)
+    parts = [mixed(5, 3, 31), mixed(8, 4, 32, fl.symmetric(8, "-+")), fl.majority(0.5)]
+    rules = fl.Rules(
+        fl.Rules.exact(parts[0], degrees).partition, np.concatenate([x.exact(degrees).p for x in parts])
+    )
+    init = fl.random_states(graph.n, len(rules), seed=31)
+    want = fl.simulate(graph, rules, init, 8, backend="reference", seed=31)
+    got = fl.simulate(graph, rules, init, 8, backend=backend, seed=31)
+    assert np.array_equal(got.states.bits, want.states.bits)
