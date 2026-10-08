@@ -1,5 +1,6 @@
 """fast_llna: fast, exact simulation of Life-like network automata."""
 
+from .consensus import Consensus, consensus
 from .graph import Graph, moore_torus, ring, union
 from .rules import (
     MAJORITY,
@@ -20,6 +21,8 @@ __all__ = [
     "BACKENDS",
     "available_backends",
     "simulate",
+    "Consensus",
+    "consensus",
     "States",
     "Trajectory",
     "defect_twins",
