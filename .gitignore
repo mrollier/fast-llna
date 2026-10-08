@@ -6,6 +6,8 @@ build/
 dist/
 *.so
 benchmarks/results/
+notebooks/results/
+notebooks/results_smoke/
 *.jsonl
 workstation.log
 .superpowers/
